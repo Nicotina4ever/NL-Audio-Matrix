@@ -1,0 +1,13 @@
+{
+  "name": "NLMatrix driver POC - NL Return -> NL Mic",
+  "asio": "ReaRoute ASIO (x64)",
+  "sources": [
+    { "id": "nl-return", "name": "NL Return (driver)", "type": "driver" }
+  ],
+  "destinations": [
+    { "id": "nl-mic", "name": "NL Mic (driver)", "type": "driver" }
+  ],
+  "routes": [
+    { "source": "nl-return", "destination": "nl-mic", "gainDb": 0 }
+  ]
+}

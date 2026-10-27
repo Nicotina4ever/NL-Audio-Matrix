@@ -1,0 +1,108 @@
+# Build outputs (rigenerabili)
+build/
+out/
+app/build/
+app/out/
+installer/build/
+installer/payload/
+dist/
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+!tools/*.exe
+!assets/*.exe
+
+# Materiale archiviato/obsoleto (reversibile: revisionare e cancellare a mano)
+da_eliminare/
+backups/
+*.zip
+
+# Cache locali
+__pycache__/
+*.pyc
+.pytest_cache/
+*.tlog
+*.idb
+
+# IDE
+.vs/
+.idea/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+CMakeUserPresets.json
+
+# Local toolchains / SDK caches
+JUCE/
+Windows-driver-samples/
+obs-asio/
+MicyWMD/
+SweetlyAudioDrivers/
+tools/wdk-packages/
+tools/nuget-cache/
+tools/nuget-temp/
+installer/wdk-packages/
+installer/nuget-cache/
+installer/nuget-temp/
+*.nupkg
+nuget.exe
+
+# VM, images, credentials, certificates, secrets
+vm/
+*.vmx
+*.vmdk
+*.vmsn
+*.vmem
+*.vmsd
+*.iso
+*.pfx
+*.pvk
+*.p12
+*.cer
+*.cat
+test-certs/
+secrets/
+.env
+*.secret
+credentials*
+
+# Logs / transient reports
+*.log
+reports/**/*.png
+reports/**/*.wav
+reports/**/*.json
+reports/**/*.txt
+nlmatrix_*.json
+*.dmp
+*.etl
+
+# OS / editor
+Thumbs.db
+desktop.ini
+.DS_Store
+# Driver build outputs / test artifacts (not source)
+driver/package/
+driver/test-certs/
+driver/**/x64/
+driver/**/ARM64/
+*.sys
+*.cab
+*.msi
+*.msix
+*.wixpdb
+
+# Reports: keep only human-readable summaries (evidence logs/json/wav stay local)
+reports/**
+!reports/**/
+!reports/**/*.md
+
+# Extra build output patterns
+driver/package*/
+*.log.err
+*.err

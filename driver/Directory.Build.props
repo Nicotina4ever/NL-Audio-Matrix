@@ -1,0 +1,25 @@
+<Project>
+  <!-- Local WDK/SDK paths provided inside the project (no global WDK required). -->
+  <PropertyGroup>
+    <WDKContentRoot>K:\AI\NL Audio Matrix\tools\wdk-packages\microsoft.windows.wdk.x64\10.0.26100.6584\c\</WDKContentRoot>
+    <WDKBuildFolder>10.0.26100.0</WDKBuildFolder>
+    <WDK_NuGet>true</WDK_NuGet>
+    <WindowsSdkDir>C:\Program Files (x86)\Windows Kits\10\</WindowsSdkDir>
+    <WindowsSDKVersion>10.0.26100.0\</WindowsSDKVersion>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <TargetPlatformVersion>10.0.26100.0</TargetPlatformVersion>
+    <!-- Spectre-mitigated runtime libraries are not installed in this environment. -->
+    <Driver_SpectreMitigation>false</Driver_SpectreMitigation>
+    <SpectreMitigation>Disabled</SpectreMitigation>
+    <!-- The local WDK package ships x64 host tools only; x64 tools run on this x64 host. -->
+    <WDKBinRoot_x86>K:\AI\NL Audio Matrix\tools\wdk-packages\microsoft.windows.wdk.x64\10.0.26100.6584\c\bin\10.0.26100.0\x64\</WDKBinRoot_x86>
+    <WDKBinRoot_x64>K:\AI\NL Audio Matrix\tools\wdk-packages\microsoft.windows.wdk.x64\10.0.26100.6584\c\bin\10.0.26100.0\x64\</WDKBinRoot_x64>
+    <InfToolPath>K:\AI\NL Audio Matrix\tools\wdk-packages\microsoft.windows.wdk.x64\10.0.26100.6584\c\bin\10.0.26100.0\x64\</InfToolPath>
+    <InfToolArchitecture>Native64Bit</InfToolArchitecture>
+    <RCToolPath>C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x86\</RCToolPath>
+    <RCToolArchitecture>Native32Bit</RCToolArchitecture>
+    <SkipPackageVerification>true</SkipPackageVerification>
+    <EnableTestSign>false</EnableTestSign>
+    <EnableInf2cat>false</EnableInf2cat>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,38 @@
+{
+  "name": "Router test - one loopback source to two ASIO destinations",
+  "asio": "ReaRoute ASIO (x64)",
+  "sources": [
+    {
+      "id": "test-src",
+      "name": "Test loopback CABLE Input",
+      "type": "loopback",
+      "endpoint": "CABLE Input (VB-Audio Virtual Cable)"
+    }
+  ],
+  "destinations": [
+    {
+      "id": "asio-a",
+      "name": "ASIO out 0/1",
+      "type": "asio-out",
+      "channels": [0, 1]
+    },
+    {
+      "id": "asio-b",
+      "name": "ASIO out 2/3",
+      "type": "asio-out",
+      "channels": [2, 3]
+    }
+  ],
+  "routes": [
+    {
+      "source": "test-src",
+      "destination": "asio-a",
+      "gainDb": 0
+    },
+    {
+      "source": "test-src",
+      "destination": "asio-b",
+      "gainDb": -6
+    }
+  ]
+}

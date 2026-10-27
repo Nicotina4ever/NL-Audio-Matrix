@@ -1,0 +1,151 @@
+{
+  "name": "Runtime NxM multichannel test",
+  "asio": "FlexASIO",
+  "buses": [
+    {
+      "id": "busA",
+      "name": "Bus A",
+      "channels": 8
+    }
+  ],
+  "sources": [
+    {
+      "id": "s0",
+      "name": "Test 300",
+      "type": "test",
+      "baseFrequency": 300,
+      "channels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "enabled": true,
+      "level": 0.2
+    },
+    {
+      "id": "s1",
+      "name": "Test 900",
+      "type": "test",
+      "baseFrequency": 900,
+      "channels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "enabled": true,
+      "level": 0.1
+    },
+    {
+      "id": "b0",
+      "name": "Bus A source",
+      "type": "bus",
+      "bus": "busA",
+      "enabled": true
+    }
+  ],
+  "destinations": [
+    {
+      "id": "d0",
+      "name": "Null mix-minus",
+      "type": "null",
+      "channels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "mixMinus": [
+        "s1"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "d1",
+      "name": "Null direct",
+      "type": "null",
+      "channels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "enabled": true
+    },
+    {
+      "id": "d2",
+      "name": "Null bus",
+      "type": "null",
+      "channels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "enabled": true
+    }
+  ],
+  "routes": [
+    {
+      "source": "s0",
+      "destination": "d0",
+      "gainDb": 0
+    },
+    {
+      "source": "s1",
+      "destination": "d0",
+      "gainDb": 0
+    },
+    {
+      "source": "s1",
+      "destination": "d1",
+      "gainDb": 0
+    },
+    {
+      "source": "s0",
+      "destination": "busA",
+      "gainDb": -6
+    },
+    {
+      "source": "s1",
+      "destination": "busA",
+      "channelMap": [
+        7,
+        6,
+        5,
+        4,
+        3,
+        2,
+        1,
+        0
+      ],
+      "gainDb": -6
+    },
+    {
+      "source": "b0",
+      "destination": "d2",
+      "gainDb": 0
+    }
+  ]
+}

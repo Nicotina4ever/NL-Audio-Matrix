@@ -1,0 +1,339 @@
+{
+  "name": "single-channel isolation",
+  "asio": "FlexASIO",
+  "buses": [],
+  "sources": [
+    {
+      "id": "s0",
+      "name": "tone 0",
+      "type": "test",
+      "baseFrequency": 300,
+      "channels": [
+        0
+      ],
+      "enabled": true
+    },
+    {
+      "id": "s1",
+      "name": "tone 1",
+      "type": "test",
+      "baseFrequency": 400,
+      "channels": [
+        0
+      ],
+      "enabled": true
+    },
+    {
+      "id": "s2",
+      "name": "tone 2",
+      "type": "test",
+      "baseFrequency": 500,
+      "channels": [
+        0
+      ],
+      "enabled": true
+    },
+    {
+      "id": "s3",
+      "name": "tone 3",
+      "type": "test",
+      "baseFrequency": 600,
+      "channels": [
+        0
+      ],
+      "enabled": true
+    },
+    {
+      "id": "s4",
+      "name": "tone 4",
+      "type": "test",
+      "baseFrequency": 700,
+      "channels": [
+        0
+      ],
+      "enabled": true
+    },
+    {
+      "id": "s5",
+      "name": "tone 5",
+      "type": "test",
+      "baseFrequency": 800,
+      "channels": [
+        0
+      ],
+      "enabled": true
+    },
+    {
+      "id": "s6",
+      "name": "tone 6",
+      "type": "test",
+      "baseFrequency": 900,
+      "channels": [
+        0
+      ],
+      "enabled": true
+    },
+    {
+      "id": "s7",
+      "name": "tone 7",
+      "type": "test",
+      "baseFrequency": 1000,
+      "channels": [
+        0
+      ],
+      "enabled": true
+    }
+  ],
+  "destinations": [
+    {
+      "id": "d0",
+      "name": "null 0",
+      "type": "null",
+      "channels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "enabled": true
+    },
+    {
+      "id": "d1",
+      "name": "null 1",
+      "type": "null",
+      "channels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "enabled": true
+    },
+    {
+      "id": "d2",
+      "name": "null 2",
+      "type": "null",
+      "channels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "enabled": true
+    },
+    {
+      "id": "d3",
+      "name": "null 3",
+      "type": "null",
+      "channels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "enabled": true
+    },
+    {
+      "id": "d4",
+      "name": "null 4",
+      "type": "null",
+      "channels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "enabled": true
+    },
+    {
+      "id": "d5",
+      "name": "null 5",
+      "type": "null",
+      "channels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "enabled": true
+    },
+    {
+      "id": "d6",
+      "name": "null 6",
+      "type": "null",
+      "channels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "enabled": true
+    },
+    {
+      "id": "d7",
+      "name": "null 7",
+      "type": "null",
+      "channels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "enabled": true
+    }
+  ],
+  "routes": [
+    {
+      "source": "s0",
+      "destination": "d0",
+      "gainDb": 0,
+      "channelMap": [
+        0,
+        -1,
+        -1,
+        -1,
+        -1,
+        -1,
+        -1,
+        -1
+      ]
+    },
+    {
+      "source": "s1",
+      "destination": "d1",
+      "gainDb": 0,
+      "channelMap": [
+        -1,
+        0,
+        -1,
+        -1,
+        -1,
+        -1,
+        -1,
+        -1
+      ]
+    },
+    {
+      "source": "s2",
+      "destination": "d2",
+      "gainDb": 0,
+      "channelMap": [
+        -1,
+        -1,
+        0,
+        -1,
+        -1,
+        -1,
+        -1,
+        -1
+      ]
+    },
+    {
+      "source": "s3",
+      "destination": "d3",
+      "gainDb": 0,
+      "channelMap": [
+        -1,
+        -1,
+        -1,
+        0,
+        -1,
+        -1,
+        -1,
+        -1
+      ]
+    },
+    {
+      "source": "s4",
+      "destination": "d4",
+      "gainDb": 0,
+      "channelMap": [
+        -1,
+        -1,
+        -1,
+        -1,
+        0,
+        -1,
+        -1,
+        -1
+      ]
+    },
+    {
+      "source": "s5",
+      "destination": "d5",
+      "gainDb": 0,
+      "channelMap": [
+        -1,
+        -1,
+        -1,
+        -1,
+        -1,
+        0,
+        -1,
+        -1
+      ]
+    },
+    {
+      "source": "s6",
+      "destination": "d6",
+      "gainDb": 0,
+      "channelMap": [
+        -1,
+        -1,
+        -1,
+        -1,
+        -1,
+        -1,
+        0,
+        -1
+      ]
+    },
+    {
+      "source": "s7",
+      "destination": "d7",
+      "gainDb": 0,
+      "channelMap": [
+        -1,
+        -1,
+        -1,
+        -1,
+        -1,
+        -1,
+        -1,
+        0
+      ]
+    }
+  ]
+}

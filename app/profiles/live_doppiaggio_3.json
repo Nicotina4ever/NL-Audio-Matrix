@@ -1,0 +1,110 @@
+{
+  "name": "Live Doppiaggio - 3 Attori",
+  "asio": "Universal Audio USB",
+  "buses": [
+    { "id": "mic-marco",    "name": "NL Mic Marco" },
+    { "id": "mic-giovanni", "name": "NL Mic Giovanni" },
+    { "id": "mic-mario",    "name": "NL Mic Mario" },
+    { "id": "monitor",      "name": "Local monitor" }
+  ],
+  "sources": [
+    {
+      "id": "marco-return",
+      "name": "Marco - Source-Connect return",
+      "type": "loopback",
+      "endpoint": "NL Return Marco"
+    },
+    {
+      "id": "giovanni-return",
+      "name": "Giovanni - SessionLinkPRO return",
+      "type": "loopback",
+      "endpoint": "NL Return Giovanni"
+    },
+    {
+      "id": "mario-return",
+      "name": "Mario - Nexus return",
+      "type": "loopback",
+      "endpoint": "NL Return Mario"
+    },
+    {
+      "id": "me-mic",
+      "name": "Local microphone (Apollo input)",
+      "type": "asio-in",
+      "channels": [0, 1]
+    },
+    { "id": "mic-marco-src",    "name": "NL Mic Marco bus source",    "type": "bus", "bus": "mic-marco" },
+    { "id": "mic-giovanni-src", "name": "NL Mic Giovanni bus source", "type": "bus", "bus": "mic-giovanni" },
+    { "id": "mic-mario-src",    "name": "NL Mic Mario bus source",    "type": "bus", "bus": "mic-mario" },
+    { "id": "monitor-src",      "name": "Local monitor bus source",   "type": "bus", "bus": "monitor" }
+  ],
+  "destinations": [
+    {
+      "id": "out-mic-marco",
+      "name": "NL Mic Marco endpoint",
+      "type": "render",
+      "endpoint": "NL Mic Marco"
+    },
+    {
+      "id": "out-mic-giovanni",
+      "name": "NL Mic Giovanni endpoint",
+      "type": "render",
+      "endpoint": "NL Mic Giovanni"
+    },
+    {
+      "id": "out-mic-mario",
+      "name": "NL Mic Mario endpoint",
+      "type": "render",
+      "endpoint": "NL Mic Mario"
+    },
+    {
+      "id": "out-monitor",
+      "name": "Apollo headphone monitor",
+      "type": "render",
+      "endpoint": "Apollo Monitor"
+    },
+    {
+      "id": "reaper-marco",
+      "name": "REAPER track - Marco",
+      "type": "asio-out",
+      "channels": [2, 3]
+    },
+    {
+      "id": "reaper-giovanni",
+      "name": "REAPER track - Giovanni",
+      "type": "asio-out",
+      "channels": [4, 5]
+    },
+    {
+      "id": "reaper-mario",
+      "name": "REAPER track - Mario",
+      "type": "asio-out",
+      "channels": [0, 1]
+    }
+  ],
+  "routes": [
+    { "source": "marco-return",    "destination": "mic-giovanni", "gainDb": 0 },
+    { "source": "marco-return",    "destination": "mic-mario",    "gainDb": 0 },
+    { "source": "marco-return",    "destination": "monitor",      "gainDb": 0 },
+    { "source": "marco-return",    "destination": "reaper-marco", "gainDb": 0 },
+
+    { "source": "giovanni-return", "destination": "mic-marco",    "gainDb": 0 },
+    { "source": "giovanni-return", "destination": "mic-mario",    "gainDb": 0 },
+    { "source": "giovanni-return", "destination": "monitor",      "gainDb": 0 },
+    { "source": "giovanni-return", "destination": "reaper-giovanni", "gainDb": 0 },
+
+    { "source": "mario-return",    "destination": "mic-marco",    "gainDb": 0 },
+    { "source": "mario-return",    "destination": "mic-giovanni", "gainDb": 0 },
+    { "source": "mario-return",    "destination": "monitor",      "gainDb": 0 },
+    { "source": "mario-return",    "destination": "reaper-mario", "gainDb": 0 },
+
+    { "source": "me-mic",          "destination": "mic-marco",    "gainDb": 0 },
+    { "source": "me-mic",          "destination": "mic-giovanni", "gainDb": 0 },
+    { "source": "me-mic",          "destination": "mic-mario",    "gainDb": 0 },
+    { "source": "me-mic",          "destination": "monitor",      "gainDb": 0 },
+
+    { "source": "mic-marco-src",    "destination": "out-mic-marco",    "gainDb": 0 },
+    { "source": "mic-giovanni-src", "destination": "out-mic-giovanni", "gainDb": 0 },
+    { "source": "mic-mario-src",    "destination": "out-mic-mario",    "gainDb": 0 },
+    { "source": "monitor-src",      "destination": "out-monitor",      "gainDb": 0 }
+  ]
+}

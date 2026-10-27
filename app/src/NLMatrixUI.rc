@@ -1,0 +1,32 @@
+﻿#pragma code_page(65001)
+
+#include <windows.h>
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION  0,4,0,0
+PRODUCTVERSION  0,4,0,0
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS 0x40004L
+FILETYPE 0x1L
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904E4"
+        BEGIN
+            VALUE "CompanyName", "Nicola Lanci"
+            VALUE "FileDescription", "NL Audio Matrix"
+            VALUE "FileVersion", "0.4.0"
+            VALUE "InternalName", "NLMatrixUI"
+            VALUE "LegalCopyright", "Copyright (c) Nicola Lanci"
+            VALUE "OriginalFilename", "NLMatrixUI.exe"
+            VALUE "ProductName", "NL Audio Matrix"
+            VALUE "ProductVersion", "0.4.0-alpha"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1252
+    END
+END

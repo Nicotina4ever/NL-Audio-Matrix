@@ -1,0 +1,19 @@
+{
+  "name": "Application Loopback test - capture NLMatrixLive process only",
+  "asio": "ReaRoute ASIO (x64)",
+  "sources": [
+    {
+      "id": "live-process",
+      "name": "NLMatrixLive test tone process",
+      "type": "process",
+      "process": "NLMatrixLive.exe",
+      "includeProcessTree": true
+    }
+  ],
+  "destinations": [
+    { "id": "asio-a", "name": "ASIO out 0/1", "type": "asio-out", "channels": [0, 1] }
+  ],
+  "routes": [
+    { "source": "live-process", "destination": "asio-a", "gainDb": 0 }
+  ]
+}

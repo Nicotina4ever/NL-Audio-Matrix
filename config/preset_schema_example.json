@@ -1,0 +1,88 @@
+{
+  "$schema_note": "ESEMPIO di design, NON file configurazione funzionante in un prodotto già pronto",
+  "schemaVersion": 1,
+  "audio": {
+    "nominalSampleRate": 48000,
+    "preferredAsioBufferFrames": 256,
+    "sink": "CABLE Input",
+    "sinkBackend": "WASAPI"
+  },
+  "sources": [
+    {
+      "id": "apollo.in1",
+      "device": "Apollo Solo USB ASIO",
+      "absoluteChannel": 1,
+      "name": "Mic 1"
+    },
+    {
+      "id": "apollo.in7",
+      "device": "Apollo Solo USB ASIO",
+      "absoluteChannel": 7,
+      "name": "Aux 1 L"
+    },
+    {
+      "id": "apollo.in8",
+      "device": "Apollo Solo USB ASIO",
+      "absoluteChannel": 8,
+      "name": "Aux 1 R"
+    }
+  ],
+  "buses": [
+    {
+      "id": "sc_send",
+      "channels": 2,
+      "protectAgainstReturnLoop": true
+    }
+  ],
+  "presets": [
+    {
+      "id": "direct",
+      "description": "Mic1 only (mono copied to L/R at conservative gain)",
+      "routes": [
+        {
+          "source": "apollo.in1",
+          "destination": "sc_send",
+          "outputs": [
+            0,
+            1
+          ],
+          "gainDb": -6.0
+        }
+      ]
+    },
+    {
+      "id": "reaper_aux",
+      "description": "AUX1 L/R only; Mic1 deliberately not mixed in",
+      "routes": [
+        {
+          "source": "apollo.in7",
+          "destination": "sc_send",
+          "outputs": [
+            0
+          ],
+          "gainDb": 0.0
+        },
+        {
+          "source": "apollo.in8",
+          "destination": "sc_send",
+          "outputs": [
+            1
+          ],
+          "gainDb": 0.0
+        }
+      ]
+    },
+    {
+      "id": "dual_audit",
+      "description": "Meter only. Not transmitted",
+      "routes": [],
+      "muted": true
+    }
+  ],
+  "forbiddenEdges": [
+    {
+      "from": "source_connect_return",
+      "to": "sc_send"
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "name": "Mix-minus test - source excluded from its own return",
+  "asio": "ReaRoute ASIO (x64)",
+  "buses": [
+    { "id": "to-others", "name": "Mix to other participants" },
+    { "id": "own-return", "name": "Own return (must stay silent)" }
+  ],
+  "sources": [
+    {
+      "id": "actor-src",
+      "name": "Actor source (test loopback)",
+      "type": "loopback",
+      "endpoint": "CABLE Input (VB-Audio Virtual Cable)"
+    },
+    { "id": "to-others-src", "name": "To others bus", "type": "bus", "bus": "to-others" },
+    { "id": "own-return-src", "name": "Own return bus", "type": "bus", "bus": "own-return" }
+  ],
+  "destinations": [
+    { "id": "asio-others", "name": "ASIO out others", "type": "asio-out", "channels": [0, 1] },
+    { "id": "asio-own", "name": "ASIO out own (silent expected)", "type": "asio-out", "channels": [2, 3] }
+  ],
+  "routes": [
+    { "source": "actor-src", "destination": "to-others", "gainDb": 0 },
+    { "source": "to-others-src", "destination": "asio-others", "gainDb": 0 },
+    { "source": "own-return-src", "destination": "asio-own", "gainDb": 0 }
+  ]
+}
