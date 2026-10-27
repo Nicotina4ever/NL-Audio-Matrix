@@ -32,6 +32,8 @@ Historical backlog: `docs/TASKS_HISTORY.md`. Engine architecture: `docs/ENGINE_V
 | B4 | Post-fix Focusrite recording | BLOCKED (VM USB passthrough) | Extensive recovery attempts on 2026-10-27: user re-plug in a different host port + VM attach, guest device remove/rescan, pnputil restart-device, vmrun reset, full VM power cycle, and finally enabling USB 3.0 xHCI in the vmx. Result is always the same: composite device enumerates (vendor driver 4.150.0, status OK), WASAPI endpoints appear, but streaming fails (capture frames=0, ASIO "Device didn't start correctly"). Conclusion: VMware USB-passthrough limitation for this device/host pair; hardware A/B rows stay prepared for a physical Windows PC test or a repaired VM |
 | B5 | Physical monitoring via NL Matrix | TODO | Focusrite input→router→Focusrite output/headphone, distinct from Direct Monitor |
 | B6 | Focusrite GUI workflow/naming | TODO | Automatic channel discovery/profile creation |
+| B7 | Scarlett Solo: Output 1/2 independent channel separation | TESTING — deterministic VM PASS; hardware loopback pending | Two distinct test sources (600 Hz, 900 Hz) assigned to physical ASIO Output 1 (L) and Output 2 (R) as **single channels**, not a stereo pair. Variants prepared: base, mute Output 1, Output 2 −12 dB, swapped mapping. Hardware acceptance: analog loopback of Output 1 then Output 2 into the Scarlett input, verify expected tone, mute/gain and absence of cross-talk (software tap/METERS alone is not acceptance). Reuse FINAL5, Channel Picker and existing endpoints; no new driver/architecture. Configs: `app/profiles/tests/channel_split/focus_direct*.json`; runner: `tools/Run-ChannelSplitTest.ps1 -Mode Hardware`. Deterministic VM evidence: `tools/Run-ChannelSplitTest.ps1 -Mode Deterministic` PASS with software captures (600 Hz on NL Mic 1, 900 Hz on NL Mic 2; mute/gain/swap verified) in `vm/channel_split_evidence/`. Do not repeat failed VMware USB attempts; run the physical part on the PC fisico when Focusrite ASIO is available. Focusrite is not proof of the Apollo driver path |
+| B8 | Bus split: physical output + NL Mic 1, duplicate to Output 2, independent stereo monitor | TESTING — deterministic bus PASS; hardware pending | Route bus A → physical output (Scarlett Output 1), bus B → NL Mic 1 virtual input and duplicated → Output 2, and a separate monitor bus → an independent stereo device (HD Audio in the prepared config). Config `app/profiles/tests/channel_split/focus_bus_split_monitor.json`; deterministic equivalent `virtual_bus_split_monitor.json` PASS (NL Mic 1 = 600 Hz, NL Mic 2 and NL Mic 3 = 900 Hz duplicate; monitor route validated). Hardware acceptance requires physical loopback/recording and the monitor endpoint present; keep the analog proof separate from the software tap. No new driver/architecture |
 
 ## C. GUI, mixer and usability
 
@@ -71,7 +73,8 @@ Historical backlog: `docs/TASKS_HISTORY.md`. Engine architecture: `docs/ENGINE_V
 ## Next active objectives (priority order)
 
 1. **Hardware Focusrite + latency (B4/A5)**: run the prepared legacy-vs-FINAL5
-   A/B, real voice recording through NL Mic 1 and the marker latency test on a
+   A/B, real voice recording through NL Mic 1, the marker latency test and the
+   new **B7/B8 channel-split/bus tests** (analog loopback of Output 1/2) on a
    physical Windows PC (VM USB passthrough cannot stream the Scarlett).
 2. **Multi-ASIO valido (A9)**: ReaRoute with a live client or Focusrite as extra
    device; verify both clock domains and WAV.
@@ -91,3 +94,6 @@ Historical backlog: `docs/TASKS_HISTORY.md`. Engine architecture: `docs/ENGINE_V
 - Guest timer grid is 15.625 ms; the engine writer uses timeBeginPeriod(1) +
   MMCSS and its servo absorbs the remaining jitter.
 - Kernel counter values are cumulative since driver boot; use per-run deltas.
+- B7/B8: a software capture/METERS is a virtual tap, not an analog loopback;
+  do not treat it as proof of the Focusrite outputs or of the Apollo driver.
+  Physical loopback evidence is required before marking the hardware rows PASS.

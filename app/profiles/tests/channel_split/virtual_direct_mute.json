@@ -1,0 +1,91 @@
+{
+ "name": "Deterministic channel split: NL Mic 1 destination muted",
+ "asio": "FlexASIO",
+ "version": 3,
+ "devices": [
+  {
+   "id": "flex",
+   "backend": "asio",
+   "driver": "FlexASIO",
+   "sampleRate": 48000,
+   "buffer": 256,
+   "clockMaster": true
+  }
+ ],
+ "engine": {
+  "bufferMode": "balanced"
+ },
+ "buses": [],
+ "sources": [
+  {
+   "id": "s600",
+   "name": "Test 600 Hz",
+   "type": "test",
+   "deviceId": "flex",
+   "channels": [
+    0,
+    1
+   ],
+   "enabled": true,
+   "baseFrequency": 600,
+   "testLevel": 0.25
+  },
+  {
+   "id": "s900",
+   "name": "Test 900 Hz",
+   "type": "test",
+   "deviceId": "flex",
+   "channels": [
+    0,
+    1
+   ],
+   "enabled": true,
+   "baseFrequency": 900,
+   "testLevel": 0.25
+  }
+ ],
+ "destinations": [
+  {
+   "id": "d600",
+   "name": "NL Mic 1",
+   "type": "driver",
+   "driverEndpoint": 0,
+   "channels": [
+    0
+   ],
+   "enabled": false,
+   "muted": true
+  },
+  {
+   "id": "d900",
+   "name": "NL Mic 2",
+   "type": "driver",
+   "driverEndpoint": 1,
+   "channels": [
+    0
+   ],
+   "enabled": true,
+   "gainDb": 0
+  }
+ ],
+ "routes": [
+  {
+   "source": "s600",
+   "destination": "d600",
+   "gainDb": 0,
+   "enabled": true,
+   "channelMap": [
+    0
+   ]
+  },
+  {
+   "source": "s900",
+   "destination": "d900",
+   "gainDb": 0,
+   "enabled": true,
+   "channelMap": [
+    0
+   ]
+  }
+ ]
+}

@@ -1,0 +1,89 @@
+{
+ "name": "Scarlett channel split: outputs swapped (600 Hz -> Output 2, 900 Hz -> Output 1)",
+ "asio": "Focusrite USB ASIO",
+ "version": 3,
+ "devices": [
+  {
+   "id": "focus",
+   "backend": "asio",
+   "driver": "Focusrite USB ASIO",
+   "sampleRate": 48000,
+   "buffer": 256,
+   "clockMaster": true
+  }
+ ],
+ "engine": {
+  "bufferMode": "balanced"
+ },
+ "buses": [],
+ "sources": [
+  {
+   "id": "s600",
+   "name": "Test 600 Hz",
+   "type": "test",
+   "deviceId": "focus",
+   "channels": [
+    0,
+    1
+   ],
+   "enabled": true,
+   "baseFrequency": 600,
+   "testLevel": 0.25
+  },
+  {
+   "id": "s900",
+   "name": "Test 900 Hz",
+   "type": "test",
+   "deviceId": "focus",
+   "channels": [
+    0,
+    1
+   ],
+   "enabled": true,
+   "baseFrequency": 900,
+   "testLevel": 0.25
+  }
+ ],
+ "destinations": [
+  {
+   "id": "out1",
+   "name": "Scarlett Output 2 (R) [swapped]",
+   "type": "asio-out",
+   "deviceId": "focus",
+   "channels": [
+    1
+   ],
+   "enabled": true
+  },
+  {
+   "id": "out2",
+   "name": "Scarlett Output 1 (L) [swapped]",
+   "type": "asio-out",
+   "deviceId": "focus",
+   "channels": [
+    0
+   ],
+   "enabled": true
+  }
+ ],
+ "routes": [
+  {
+   "source": "s600",
+   "destination": "out1",
+   "gainDb": 0,
+   "enabled": true,
+   "channelMap": [
+    0
+   ]
+  },
+  {
+   "source": "s900",
+   "destination": "out2",
+   "gainDb": 0,
+   "enabled": true,
+   "channelMap": [
+    0
+   ]
+  }
+ ]
+}

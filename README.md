@@ -101,6 +101,7 @@ Profili di esempio in `app/profiles/` e `vm/engine/` (questi ultimi per il colla
 . tools\vm\NLVM.ps1                       # NL-Exec / NL-CopyTo / NL-CopyFrom / NL-Kill
 pwsh tools\vm\Run-FinalAcceptance.ps1 -RouterExe <router.exe> -OutRoot <dir>
 pwsh tools\vm\Run-ContinuityTest.ps1 -Name ... -ConfigJson ... -RouterExe ...
+pwsh tools\Run-ChannelSplitTest.ps1 -Mode Validate|Deterministic|Hardware
 python tools\analyze_continuity.py <wav> --tone 1000
 ```
 

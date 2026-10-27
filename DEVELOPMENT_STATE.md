@@ -181,7 +181,11 @@ Verified (full-rate VM window, same ABI3 driver, back-to-back A/B):
 1. **Hardware Focusrite** — il passthrough USB della VM non trasmette (ASIO non
    apre, WASAPI 0 frame) dopo re-plug, cambio porta, xHCI, reset/power-cycle:
    limite VMware, non del prodotto. Le righe hardware (A/B legacy vs FINAL5 +
-   latenza marker) sono pronte per un PC fisico.
+   latenza marker + B7/B8 separazione Output 1/2 e bus split) sono pronte per un
+   PC fisico. Il test deterministico B7/B8 è già PASS in VM (600 Hz → NL Mic 1,
+   900 Hz → NL Mic 2, mute/gain/swap e duplicazione bus verificati);
+   configurazioni in `app/profiles/tests/channel_split/`, runner
+   `tools/Run-ChannelSplitTest.ps1`, evidenze in `vm/channel_split_evidence/`.
 2. **Latenza definitiva** — marker FINAL5 mediana 43.2 ms (29.7-48.3, pairing
    offset esplicito); misura fisica/loopback hardware ancora da fare.
 3. **Multi-ASIO valido** — serve un client ReaRoute reale o un secondo device

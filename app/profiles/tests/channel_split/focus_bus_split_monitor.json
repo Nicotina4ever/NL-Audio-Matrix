@@ -1,0 +1,189 @@
+{
+ "name": "Scarlett bus split: bus A -> Output 1, bus B -> NL Mic 1 and Output 2, bus M -> monitor",
+ "asio": "Focusrite USB ASIO",
+ "version": 3,
+ "devices": [
+  {
+   "id": "focus",
+   "backend": "asio",
+   "driver": "Focusrite USB ASIO",
+   "sampleRate": 48000,
+   "buffer": 256,
+   "clockMaster": true
+  }
+ ],
+ "engine": {
+  "bufferMode": "balanced"
+ },
+ "buses": [
+  {
+   "id": "busA",
+   "name": "Bus A 600 Hz"
+  },
+  {
+   "id": "busB",
+   "name": "Bus B 900 Hz"
+  },
+  {
+   "id": "busM",
+   "name": "Monitor mix"
+  }
+ ],
+ "sources": [
+  {
+   "id": "s600",
+   "name": "Test 600 Hz",
+   "type": "test",
+   "deviceId": "focus",
+   "channels": [
+    0,
+    1
+   ],
+   "enabled": true,
+   "baseFrequency": 600,
+   "testLevel": 0.25
+  },
+  {
+   "id": "s900",
+   "name": "Test 900 Hz",
+   "type": "test",
+   "deviceId": "focus",
+   "channels": [
+    0,
+    1
+   ],
+   "enabled": true,
+   "baseFrequency": 900,
+   "testLevel": 0.25
+  },
+  {
+   "id": "busA-src",
+   "name": "Bus A source",
+   "type": "bus",
+   "bus": "busA",
+   "enabled": true
+  },
+  {
+   "id": "busB-src",
+   "name": "Bus B source",
+   "type": "bus",
+   "bus": "busB",
+   "enabled": true
+  },
+  {
+   "id": "busM-src",
+   "name": "Monitor bus source",
+   "type": "bus",
+   "bus": "busM",
+   "enabled": true
+  }
+ ],
+ "destinations": [
+  {
+   "id": "out1",
+   "name": "Scarlett Output 1 (L)",
+   "type": "asio-out",
+   "deviceId": "focus",
+   "channels": [
+    0
+   ],
+   "enabled": true
+  },
+  {
+   "id": "out2",
+   "name": "Scarlett Output 2 (R)",
+   "type": "asio-out",
+   "deviceId": "focus",
+   "channels": [
+    1
+   ],
+   "enabled": true
+  },
+  {
+   "id": "nlmic1",
+   "name": "NL Mic 1 (virtual input)",
+   "type": "driver",
+   "driverEndpoint": 0,
+   "channels": [
+    0,
+    1
+   ],
+   "enabled": true
+  },
+  {
+   "id": "monitor",
+   "name": "Independent stereo monitor (HD Audio)",
+   "type": "render",
+   "endpoint": "Altoparlanti (High Definition Audio Device)",
+   "channels": [
+    0,
+    1
+   ],
+   "enabled": true
+  }
+ ],
+ "routes": [
+  {
+   "source": "s600",
+   "destination": "busA",
+   "gainDb": 0,
+   "enabled": true
+  },
+  {
+   "source": "s900",
+   "destination": "busB",
+   "gainDb": 0,
+   "enabled": true
+  },
+  {
+   "source": "s600",
+   "destination": "busM",
+   "gainDb": 0,
+   "enabled": true
+  },
+  {
+   "source": "s900",
+   "destination": "busM",
+   "gainDb": 0,
+   "enabled": true
+  },
+  {
+   "source": "busA-src",
+   "destination": "out1",
+   "gainDb": 0,
+   "enabled": true,
+   "channelMap": [
+    0
+   ]
+  },
+  {
+   "source": "busB-src",
+   "destination": "nlmic1",
+   "gainDb": 0,
+   "enabled": true,
+   "channelMap": [
+    0,
+    0
+   ]
+  },
+  {
+   "source": "busB-src",
+   "destination": "out2",
+   "gainDb": 0,
+   "enabled": true,
+   "channelMap": [
+    0
+   ]
+  },
+  {
+   "source": "busM-src",
+   "destination": "monitor",
+   "gainDb": -6,
+   "enabled": true,
+   "channelMap": [
+    0,
+    1
+   ]
+  }
+ ]
+}
