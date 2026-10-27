@@ -160,3 +160,31 @@ Per destination node: `underruns` (converter), `writerStarved`, `writes`,
 * GUI buffer-mode controls and buffering diagnostics: implemented and linked
   (`app/src/preferences_panel.h`, `app/src/ui_main.cpp`); runtime interaction
   test pending VM repair.
+
+## Multi-ASIO channel domain and adaptive clocking (2026-10-27)
+
+* Every ASIO device is an independent backend instance with its own opened
+  channel inventory. A source/destination bound to a non-master device is
+  validated against that device's `getOpenedInputs()/getOpenedOutputs()`; the
+  master's channel count is not used as a global limit.
+* Sources fed by an extra-ASIO or asynchronous WASAPI/process/driver clock and
+  destinations consumed by an extra-ASIO clock always pass through
+  `MatrixRateConverter`, even when nominal rates match. The converter's
+  adaptive trim absorbs clock drift; direct same-rate ring reads would drift
+  until a drop/underrun.
+* METERS exposes per-node `deviceId`, `rate`, `converterTrimPpm`,
+  `converterUnderruns` and `asyncSource` so independent clocks are measurable,
+  not inferred.
+* **ASIO output ownership is explicit**: the master output mask is built from
+  the `channels` of master `asio-out` destinations; no output stream is opened
+  for record-only graphs. Selective masks are retried as a logged full-mask
+  compatibility fallback if the driver rejects them. Inputs remain fully
+  enumerated.
+* UI channel selection is 1-based (driver convention); the profile/config model
+  is 0-based. The conversion lives in one pair of UI helpers and is covered by
+  GUI selftest checks. Arbitrary single channels remain selectable.
+
+Evidence: GUI selftest 56/56 (VM), deterministic channel-split matrix PASS,
+extra-device structural test with FlexASIO master + ReaRoute 16/16 accepting
+channels 15/16 (`vm/extra_device_channels_meters.txt`). Real audio/clock proof
+still requires a live second ASIO consumer or a second physical device.

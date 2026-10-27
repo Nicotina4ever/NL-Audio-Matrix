@@ -1,0 +1,91 @@
+{
+ "name": "Multi-ASIO extra-device channel domain: ReaRoute inputs/outputs 15/16 beyond the FlexASIO master",
+ "asio": "FlexASIO",
+ "version": 3,
+ "devices": [
+  {
+   "id": "flex",
+   "backend": "asio",
+   "driver": "FlexASIO",
+   "sampleRate": 48000,
+   "buffer": 256,
+   "clockMaster": true
+  },
+  {
+   "id": "rearoute",
+   "backend": "asio",
+   "driver": "ReaRoute ASIO (x64)",
+   "sampleRate": 48000,
+   "buffer": 256,
+   "clockMaster": false
+  }
+ ],
+ "engine": {
+  "bufferMode": "balanced"
+ },
+ "buses": [],
+ "sources": [
+  {
+   "id": "s0",
+   "name": "Test 1k",
+   "type": "test",
+   "deviceId": "flex",
+   "channels": [
+    0,
+    1
+   ],
+   "enabled": true,
+   "baseFrequency": 1000,
+   "testLevel": 0.25
+  },
+  {
+   "id": "sExtra",
+   "name": "ReaRoute input 15/16",
+   "type": "asio-in",
+   "deviceId": "rearoute",
+   "channels": [
+    14,
+    15
+   ],
+   "enabled": true
+  }
+ ],
+ "destinations": [
+  {
+   "id": "d0",
+   "name": "NL Mic 1",
+   "type": "driver",
+   "driverEndpoint": 0,
+   "channels": [
+    0,
+    1
+   ],
+   "enabled": true
+  },
+  {
+   "id": "dExtra",
+   "name": "ReaRoute output 15/16",
+   "type": "asio-out",
+   "deviceId": "rearoute",
+   "channels": [
+    14,
+    15
+   ],
+   "enabled": true
+  }
+ ],
+ "routes": [
+  {
+   "source": "s0",
+   "destination": "d0",
+   "gainDb": 0,
+   "enabled": true
+  },
+  {
+   "source": "sExtra",
+   "destination": "dExtra",
+   "gainDb": 0,
+   "enabled": true
+  }
+ ]
+}

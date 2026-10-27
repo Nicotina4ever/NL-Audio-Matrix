@@ -61,7 +61,7 @@ Principi non negoziabili:
 
 | Backend | Implementazione | Direzioni | Note |
 |---|---|---|---|
-| `AsioBackend` | JUCE 9.0.4 `AudioIODeviceType` ASIO, una istanza per device | input/output | Apre il device indipendentemente; pannello driver; canali con nomi/indici assoluti; output opzionali |
+| `AsioBackend` | JUCE 9.0.4 `AudioIODeviceType` ASIO, una istanza per device | input/output | Apre il device indipendentemente; pannello driver; canali con nomi/indici assoluti; output opzionali. Ogni device extra valida i propri canali contro il proprio inventario (`getOpenedInputs/Outputs`), non contro il master; UI 1-based, modello/config 0-based |
 | `WasapiBackend` | WASAPI nativo COM (`IMMDeviceEnumerator`, `IAudioClient3`, `IAudioCaptureClient`, `IAudioRenderClient`, `IMMNotificationClient`) | input/output/loopback | Shared mode di default; loopback capture degli endpoint di render; conversione a float planare; SRC verso il graph rate |
 | `VirtualEndpointBackend` | Trasporto diretto col driver `NLMatrixAudio.sys` | capture/render virtuali | Non passa da WASAPI per evitare doppio mix; discovery dal control device; ring condivisi |
 | `ReaRouteBackend` | Istanza ASIO del driver ReaRoute | input/output | Opzionale, P7; non prerequisito |
@@ -300,7 +300,7 @@ Documentato storicamente in `docs/history/TECHNICAL_DECISIONS.md` (D12).
 
 - **Dominio grafo:** QPC + timer ad alta risoluzione; graph rate configurabile (default 48 kHz).
 - **Dominio device:** ASIO hardware clock, WASAPI endpoint clock, WaveRT virtuale (QPC del driver). Nessun clock condiviso assunto.
-- **SRC adattivo per device:** windowed-sinc 16 tap iniziali (fallback linear), rapporto corretto dal controller di fill; compensa sia rate diversi sia drift ppm.
+- **SRC adattivo per device:** windowed-sinc 16 tap iniziali (fallback linear), rapporto corretto dal controller di fill; compensa sia rate diversi sia drift ppm. Sul percorso asincrono (ASIO extra, WASAPI/process/driver) il converter è **sempre** attivo, anche a rate nominale uguale: un read diretto accumulerebbe drift. METERS espone `converterTrimPpm`, `converterUnderruns`, `rate`, `deviceId` per ogni nodo.
 - **Latenza:** buffer device + fill operativo + blocco grafo + buffer uscita. Modalità `Low/Balanced/Safe`; valori misurati in P2/P5, nessuna promessa. Il monitor locale resta UAD Console.
 - **Meter diagnostici:** fill min/avg/max, target/banda, ppm, underrun/overrun, late tick, callback time, latenza dichiarata dal driver, XRUN.
 - **Failover:** device perso → rotte in mute, ring svuotati, riconnessione; il grafo continua. Cambio graph rate → stop/restart coordinato, rampa.
@@ -312,6 +312,7 @@ Documentato storicamente in `docs/history/TECHNICAL_DECISIONS.md` (D12).
 - GUI JUCE 9: matrice dinamica, patchbay a nodi, pannello dispositivi, bus strips, client/mix-minus, meter, panic, preset, diagnostica.
 - Layout derivato dal grafo: righe/colonne dinamiche, filtri, gruppi, zoom; nessun 4×N fisso.
 - IPC: pipe con messaggi versionati; la UI riceve stato/meter a 30 Hz e invia comandi; engine autorevole.
+- Canali ASIO: la UI (Channel Picker e campo testo) usa la numerazione **1-based** del driver, il modello/profilo 0-based; conversione in un unico punto e check di selftest. Nessuna assunzione stereo: ogni canale è selezionabile singolarmente.
 - Preset: grafo completo + assegnazioni device + profili per dispositivo + modalità latenza; schema versionato; backup; migrazione.
 - Persistenza: `%LOCALAPPDATA%\NLAudioMatrix\` (config, log, backup); niente PII nei log di default.
 - Riconnessione: match per `stableId`; se la firma cambia, profilo “da rivedere” e nessuna applicazione automatica distruttiva.

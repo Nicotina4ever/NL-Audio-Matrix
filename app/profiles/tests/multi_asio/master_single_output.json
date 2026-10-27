@@ -1,0 +1,57 @@
+{
+ "name": "Master ASIO selective output: only FlexASIO output 1 opened",
+ "asio": "FlexASIO",
+ "version": 3,
+ "devices": [
+  {
+   "id": "flex",
+   "backend": "asio",
+   "driver": "FlexASIO",
+   "sampleRate": 48000,
+   "buffer": 256,
+   "clockMaster": true
+  }
+ ],
+ "engine": {
+  "bufferMode": "balanced"
+ },
+ "buses": [],
+ "sources": [
+  {
+   "id": "s0",
+   "name": "Test 1k",
+   "type": "test",
+   "deviceId": "flex",
+   "channels": [
+    0,
+    1
+   ],
+   "enabled": true,
+   "baseFrequency": 1000,
+   "testLevel": 0.25
+  }
+ ],
+ "destinations": [
+  {
+   "id": "out0",
+   "name": "Master ASIO output 1",
+   "type": "asio-out",
+   "deviceId": "",
+   "channels": [
+    0
+   ],
+   "enabled": true
+  }
+ ],
+ "routes": [
+  {
+   "source": "s0",
+   "destination": "out0",
+   "gainDb": 0,
+   "enabled": true,
+   "channelMap": [
+    0
+   ]
+  }
+ ]
+}

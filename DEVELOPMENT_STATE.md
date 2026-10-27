@@ -1,7 +1,34 @@
 # DEVELOPMENT_STATE — NL Audio Matrix
 
-**Updated:** 2026-10-27 21:25 Europe/Rome
+**Updated:** 2026-10-27 23:45 Europe/Rome
 **Objective:** complete the audio engine, real Focusrite validation and professional GUI without false PASSes.
+
+## Increment 2026-10-27 23:45 — multi-ASIO channel domain, async clocks, 1-based channels
+
+Driven by the OBS-ASIO / atkAudio comparison (behavioural reference only; both
+are GPL/AGPL, no code copied) and by the Apollo per-channel requirement:
+
+- **Extra-ASIO channel domain fixed**: every ASIO source/destination bound to a
+  non-master device is now validated against that driver's own
+  `getOpenedInputs()/getOpenedOutputs()`, not against the master's channel count.
+  Before this, a 16-channel extra device could only use channels that also
+  existed on the master. VM structural proof: FlexASIO master + ReaRoute extra
+  16/16, source/destination channels 15/16 accepted, router exit 0
+  (`app/profiles/tests/multi_asio/extra_device_channels.json`).
+- **Always-on adaptive SRC for independent clocks**: extra-ASIO sources,
+  extra-ASIO destinations and async WASAPI/process/driver sources now always run
+  through `MatrixRateConverter` (previously direct ring reads when the nominal
+  rate matched, which silently accumulated clock drift). METERS nodes expose
+  `deviceId`, `rate`, `converterTrimPpm`, `converterUnderruns`,
+  `asyncSource`; the ReaRoute extra source shows an adaptive trim ≈ +185 ppm.
+- **ASIO channels are 1-based in the UI** (driver convention) and 0-based only in
+  the profile/config model, through one explicit conversion boundary. The
+  Channel Picker already listed real names and arbitrary single channels; the
+  old 1-based tooltip vs 0-based text field ambiguity is gone.
+- New engine build SHA256 `5B5C2495...`, UI `307193D2...`; GUI selftest
+  **56/56 PASS** (new checks for 1-based display/parse), channel-split
+  deterministic matrix still PASS. Hardware Apollo/per-channel audio and a
+  live second-ASIO consumer remain pending.
 
 ## Engine v2 (2026-10-27) — main result of this cycle
 
@@ -220,4 +247,17 @@ evidenze `reports/engine/**`, binari `vm/baseline/*`.
 - Latency marker method (analyzer pairing offset): FINAL5 median 43.2 ms.
 - Half-rate shared-mode clock investigation and CLOCK_ISOLATION matrix — do not
   repeat host/guest levers; accurate test clock = FlexASIO on NLMatrix virtual
-  render endpoint.
+  render endpoint* **ASIO outputs are opt-in and selective**: the master output mask is built
+  only from explicit master `asio-out` destinations; a record-only graph opens
+  no output stream, and a single-output route opens only that channel. A driver
+  that rejects the selective mask triggers a logged full-mask compatibility
+  fallback (no destination created). Inputs remain fully enumerated. Evidence:
+  `app/profiles/tests/multi_asio/master_single_output.json` (VM).
+* Async WASAPI loopback source smoke: CABLE Input (render) → router loopback
+  source → NL Mic 1 captured 600 Hz (dominant 599.881 Hz, RMS −12.38 dBFS) with
+  no router errors; the always-on adaptive converter therefore runs on the
+  async path. Continuity analyzer is not a valid PASS here (player start/stop
+  boundaries; 440 ms of gaps concentrated at the edges and a 6.18 Hz clock
+  recurrence error). Evidence: `vm/async_loop_mic1.wav`,
+  `vm/async_loop_router.err.log`.
+.

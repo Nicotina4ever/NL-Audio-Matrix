@@ -130,6 +130,7 @@ namespace nlmatrix
 
         int getChannels() const noexcept { return channels; }
         uint64_t getUnderruns() const noexcept { return underruns; }
+        double getTrim() const noexcept { return trim; }
 
         void read (MatrixRing& ring, float* const* destination, int destinationChannels,
                    int numFrames, double sourceRate, double destinationRate,

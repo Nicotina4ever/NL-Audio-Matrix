@@ -582,14 +582,23 @@ namespace
         bool enabled = true;
     };
 
+    // The UI presents ASIO channels exactly as the driver does: 1-based.
+    // The profile/config model stays 0-based (current engine ABI); these two
+    // helpers are the only conversion boundary, so the Channel Picker and the
+    // text field can never silently select the wrong physical channel.
     std::vector<int> parseChannels (const juce::String& text)
     {
         std::vector<int> result;
         juce::StringArray parts;
         parts.addTokens (text, ",", "");
         for (const auto& p : parts)
-            if (p.trim().isNotEmpty())
-                result.push_back (p.trim().getIntValue());
+        {
+            if (p.trim().isEmpty())
+                continue;
+            const int oneBased = p.trim().getIntValue();
+            if (oneBased >= 1)
+                result.push_back (oneBased - 1);
+        }
         return result;
     }
 
@@ -597,7 +606,7 @@ namespace
     {
         juce::StringArray parts;
         for (int ch : channels)
-            parts.add (juce::String (ch));
+            parts.add (juce::String (ch + 1));
         return parts.joinIntoString (",");
     }
 
@@ -2009,7 +2018,7 @@ namespace
             addAndMakeVisible (channelsEditor);
             addAndMakeVisible (processEditor);
             name.setTextToShowWhenEmpty ("Source name", Palette::muted);
-            channelsEditor.setTextToShowWhenEmpty ("Channels, e.g. 0,1", Palette::muted);
+            channelsEditor.setTextToShowWhenEmpty ("Channels, e.g. 1,2", Palette::muted);
             processEditor.setTextToShowWhenEmpty ("process.exe or leave empty for PID", Palette::muted);
             type.onChange = [this] { updateVisibility(); };
             updateVisibility();
@@ -3199,8 +3208,8 @@ namespace
                         routeDestination.setSelectedItemIndex ((int) destinations.size() + i,
                                                                juce::dontSendNotification);
             };
-            sourceType.onChange = [this] { updateSourceFields(); if (sourceChannels.getText().isEmpty()) sourceChannels.setText ("0,1"); };
-            destinationType.onChange = [this] { updateDestinationFields(); if (destinationChannels.getText().isEmpty()) destinationChannels.setText ("0,1"); };
+            sourceType.onChange = [this] { updateSourceFields(); if (sourceChannels.getText().isEmpty()) sourceChannels.setText ("1,2"); };
+            destinationType.onChange = [this] { updateDestinationFields(); if (destinationChannels.getText().isEmpty()) destinationChannels.setText ("1,2"); };
             sourceEndpoint.onChange = [this] { setStatus (L10n::tr ("Sorgente Windows: ", "Windows source: ")
                                                                   + sourceEndpoint.getText()); };
             destinationEndpoint.onChange = [this] { setStatus (L10n::tr ("Destinazione Windows: ", "Windows destination: ")
@@ -3669,6 +3678,10 @@ namespace
             const auto savedAsio = asioBox.getText();
             asioBox.setText ("ReaRoute ASIO (x64)", juce::dontSendNotification);
             check (discoverChannels (true).size() >= 16, "ReaRoute 16-channel discovery");
+            check (channelsToText (std::vector<int> { 0, 1 }) == "1,2",
+                   "ASIO channel UI displays 1-based channels");
+            check (parseChannels ("1,2") == std::vector<int> { 0, 1 },
+                   "ASIO channel UI maps 1-based channels to 0-based model");
             asioBox.setText (savedAsio, juce::dontSendNotification);
             sourceType.setSelectedId (previousSourceType, juce::dontSendNotification);
             const auto previousDestType = destinationType.getSelectedId();
@@ -6558,7 +6571,7 @@ namespace
 
             if (s.type == "asio-in" && s.channels.empty())
             {
-                setStatus (L10n::tr ("La sorgente ASIO richiede i canali (es. 0,1)", "ASIO input source needs channels (e.g. 0,1)"));
+                setStatus (L10n::tr ("La sorgente ASIO richiede i canali (es. 1,2)", "ASIO input source needs channels (e.g. 1,2)"));
                 return;
             }
             if ((s.type == "loopback" || s.type == "capture") && s.endpoint.isEmpty())

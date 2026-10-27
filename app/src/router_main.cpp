@@ -1258,6 +1258,7 @@ namespace
                 if (d != nullptr)
                 {
                     d->matrixRate.store (graphRate, std::memory_order_release);
+                    d->sampleRate.store (rate, std::memory_order_release);
                     if (d->asioOutputConverter == nullptr)
                         d->asioOutputConverter = std::make_unique<nlmatrix::MatrixRateConverter> (d->channels);
                     else
@@ -1346,8 +1347,11 @@ namespace
                         ? adaptiveFrames
                         : juce::jmax (256, (int) std::lround (graphRate
                                                               * (double) gEngineTuning.extraAsioTargetMs / 1000.0));
-                    if (destination->asioOutputConverter != nullptr
-                        && graphRate > 0.0 && std::abs (graphRate - deviceRate) > 0.5)
+                    // Always use the converter for an extra ASIO device, even at
+                    // the same nominal rate: the device has its own clock and the
+                    // adaptive trim absorbs the drift (same-rate direct reads
+                    // would slowly overflow/starve the ring).
+                    if (destination->asioOutputConverter != nullptr && graphRate > 0.0)
                     {
                         const int fillBefore = destination->asioOutputRing->available();
                         destination->ringFillFrames.store (fillBefore, std::memory_order_relaxed);
@@ -1604,11 +1608,11 @@ namespace
                         pointers[ch] = s->buf[(size_t) ch].data();
                     const int sourceTarget = juce::jmax (256, (int) std::lround (
                         effectiveRate * (double) gEngineTuning.ringTargetMinMs / 1000.0));
-                    if (std::abs (effectiveRate - callbackRate) <= 0.5)
-                        s->asioInputRing->read (pointers, s->channels, n);
-                    else
-                        s->converter.read (*s->asioInputRing, pointers, s->channels, n,
-                                           effectiveRate, callbackRate, sourceTarget);
+                    // Always use the converter for an extra ASIO device, even when
+                    // the nominal rates match: its clock is independent from the
+                    // graph clock and the adaptive trim absorbs the drift.
+                    s->converter.read (*s->asioInputRing, pointers, s->channels, n,
+                                       effectiveRate, callbackRate, sourceTarget);
                 }
                 else if (s->def.type == "asio-in")
                 {
@@ -1630,11 +1634,11 @@ namespace
                         pointers[ch] = s->buf[(size_t) ch].data();
                     const int sourceTarget = juce::jmax (256, (int) std::lround (
                         effectiveRate * (double) gEngineTuning.ringTargetMinMs / 1000.0));
-                    if (std::abs (effectiveRate - callbackRate) <= 0.5)
-                        s->ring->read (pointers, s->channels, n);
-                    else
-                        s->converter.read (*s->ring, pointers, s->channels, n,
-                                           effectiveRate, callbackRate, sourceTarget);
+                    // Async WASAPI/process/driver sources have their own clock:
+                    // always adapt with the converter, including same-rate nominal
+                    // configurations where drift would otherwise accumulate.
+                    s->converter.read (*s->ring, pointers, s->channels, n,
+                                       effectiveRate, callbackRate, sourceTarget);
                 }
 
                 const bool sourceEnabled = si < snapshot->sourceEnabled.size()
@@ -2116,17 +2120,43 @@ namespace
 
         const auto asioIns = asioDevice->getInputChannelNames();
         const auto asioOuts = asioDevice->getOutputChannelNames();
-        const bool needOutputs = std::any_of (config.destinations.begin(), config.destinations.end(),
-                                              [] (const DestinationDef& d) { return d.type == "asio-out"; });
+        // Only the master's outputs referenced by an explicit master asio-out
+        // destination are opened.  Inputs stay fully enumerated (Apollo P1);
+        // outputs are opt-in, so a record-only project does not claim outputs
+        // used by Console/REAPER.
+        std::set<juce::String> plannedExtraIds;
+        for (const auto& dd : config.devices)
+            if (dd.backend == "asio" && dd.id.isNotEmpty()
+                && (dd.driver.isNotEmpty() ? dd.driver : dd.displayName) != config.asio)
+                plannedExtraIds.insert (dd.id);
+        bool needOutputs = false;
+        juce::BigInteger outMask;
+        for (const auto& d : config.destinations)
+        {
+            if (d.type != "asio-out" || plannedExtraIds.count (d.deviceId) != 0)
+                continue;
+            needOutputs = true;
+            for (int ch : d.channels)
+                if (ch >= 0 && ch < asioOuts.size())
+                    outMask.setBit (ch);
+        }
 
-        juce::BigInteger inMask, outMask;
+        juce::BigInteger inMask;
         inMask.setRange (0, asioIns.size(), true);
-        if (needOutputs)
-            outMask.setRange (0, asioOuts.size(), true);
 
         auto asioError = asioDevice->open (inMask, outMask, requestedRate, requestedBuffer);
+        if (asioError.isNotEmpty() && needOutputs)
+        {
+            // Some ASIO drivers only accept the full output mask.  Fall back
+            // explicitly and report it; never silently claim unused outputs.
+            std::cerr << "Selective ASIO output mask rejected by the driver; retrying with all outputs.\n";
+            outMask.setRange (0, asioOuts.size(), true);
+            asioError = asioDevice->open (inMask, outMask, requestedRate, requestedBuffer);
+        }
         if (asioError.isNotEmpty() && ! needOutputs)
         {
+            // A few drivers require at least one output stream to open; this is
+            // a compatibility fallback, not a graph destination.
             outMask.setRange (0, asioOuts.size(), true);
             asioError = asioDevice->open (inMask, outMask, requestedRate, requestedBuffer);
         }
@@ -2252,14 +2282,38 @@ namespace
             }
             else if (def.type == "asio-in")
             {
-                for (int ch : def.channels)
+                // A source bound to an extra ASIO driver must be validated against
+                // that driver's own input inventory, not against the graph master.
+                // This is what makes all channels of every ASIO driver usable
+                // (e.g. a 16-input device while the master has only 2 inputs).
+                auto extraIt = extraAsioDevices.find (def.deviceId);
+                if (extraIt != extraAsioDevices.end())
                 {
-                    if (ch < 0 || ch >= asioIns.size())
+                    const int extraInputs = extraIt->second != nullptr
+                                                ? extraIt->second->getOpenedInputs() : 0;
+                    for (int ch : def.channels)
                     {
-                        std::cerr << "Source " << def.id << ": ASIO input " << ch << " out of range.\n";
-                        return 7;
+                        if (ch < 0 || ch >= extraInputs)
+                        {
+                            std::cerr << "Source " << def.id << ": ASIO input " << ch
+                                      << " out of range for extra device "
+                                      << def.deviceId << " (" << extraInputs << " inputs).\n";
+                            return 7;
+                        }
                     }
-                    rt->asioCompact.push_back (inMap[(size_t) ch]);
+                }
+                else
+                {
+                    for (int ch : def.channels)
+                    {
+                        if (ch < 0 || ch >= asioIns.size())
+                        {
+                            std::cerr << "Source " << def.id << ": ASIO input " << ch << " out of range.\n";
+                            return 7;
+                        }
+                        rt->asioCompact.push_back (inMap[(size_t) ch]);
+                    }
+                    rt->sampleRate.store (asioRate, std::memory_order_release);
                 }
             }
             else if (def.type == "loopback")
@@ -2537,14 +2591,36 @@ namespace
 
             if (def.type == "asio-out")
             {
-                for (int ch : def.channels)
+                // As for sources, an extra ASIO destination uses the extra
+                // driver's own output inventory (not the graph master's).
+                auto extraIt = extraAsioDevices.find (def.deviceId);
+                if (extraIt != extraAsioDevices.end())
                 {
-                    if (ch < 0 || ch >= asioOuts.size())
+                    const int extraOutputs = extraIt->second != nullptr
+                                                 ? extraIt->second->getOpenedOutputs() : 0;
+                    for (int ch : def.channels)
                     {
-                        std::cerr << "Destination " << def.id << ": ASIO output " << ch << " out of range.\n";
-                        return 14;
+                        if (ch < 0 || ch >= extraOutputs)
+                        {
+                            std::cerr << "Destination " << def.id << ": ASIO output " << ch
+                                      << " out of range for extra device "
+                                      << def.deviceId << " (" << extraOutputs << " outputs).\n";
+                            return 14;
+                        }
                     }
-                    rt->asioCompact.push_back (outMap[(size_t) ch]);
+                }
+                else
+                {
+                    for (int ch : def.channels)
+                    {
+                        if (ch < 0 || ch >= asioOuts.size())
+                        {
+                            std::cerr << "Destination " << def.id << ": ASIO output " << ch << " out of range.\n";
+                            return 14;
+                        }
+                        rt->asioCompact.push_back (outMap[(size_t) ch]);
+                    }
+                    rt->sampleRate.store (asioRate, std::memory_order_release);
                 }
             }
             else if (def.type == "null")
@@ -3810,6 +3886,19 @@ namespace
                              s->online.load (std::memory_order_relaxed), s->channelPeak, s->channels,
                              s->ring != nullptr ? s->ring->getDroppedFrames() : 0,
                              s->converter.getUnderruns());
+                    // Clock/SRC observability: every source declares its device
+                    // and the adaptive converter trim actually applied. Independent
+                    // ASIO/WASAPI clocks are visible here (ppm), not guessed.
+                    if (auto* so = nodes.getReference (nodes.size() - 1).getDynamicObject())
+                    {
+                        so->setProperty ("deviceId", s->def.deviceId);
+                        so->setProperty ("rate", s->sampleRate.load (std::memory_order_relaxed));
+                        so->setProperty ("converterTrimPpm", s->converter.getTrim() * 1.0e6);
+                        so->setProperty ("converterUnderruns",
+                                         (juce::int64) s->converter.getUnderruns());
+                        so->setProperty ("asyncSource",
+                                         s->def.type == "asio-in" && s->asioInputRing != nullptr);
+                    }
                 }
                 for (auto& b : buses)
                     addNode (b->def.id, "bus", b->peakL, b->peakR, b->clipped, true,
@@ -3878,6 +3967,14 @@ namespace
                     const double devicePeriodMs = asioDevice->getCurrentBufferSizeSamples() * 1000.0
                                                   / juce::jmax (1.0, asioRate);
                     o->setProperty ("estimatedPipelineMs", ringMs + devicePeriodMs + 5.0);
+                    o->setProperty ("deviceId", d->def.deviceId);
+                    o->setProperty ("rate", d->sampleRate.load (std::memory_order_relaxed));
+                    if (d->asioOutputConverter != nullptr)
+                    {
+                        o->setProperty ("converterTrimPpm", d->asioOutputConverter->getTrim() * 1.0e6);
+                        o->setProperty ("converterUnderruns",
+                                        (juce::int64) d->asioOutputConverter->getUnderruns());
+                    }
                     nodes.add (node);
                 }
                 object->setProperty ("nodes", nodes);
