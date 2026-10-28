@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using System;
 using System.Diagnostics;
 using System.IO;
@@ -11,9 +11,10 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("Nicola Lanci")]
 [assembly: AssemblyProduct("NL Audio Matrix")]
 [assembly: AssemblyCopyright("Copyright (c) Nicola Lanci")]
-[assembly: AssemblyVersion("0.4.0.0")]
-[assembly: AssemblyFileVersion("0.4.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("0.4.0-alpha")]
+[assembly: AssemblyVersion("0.5.0.0")]
+[assembly: AssemblyFileVersion("0.5.0.0")]
+[assembly: AssemblyInformationalVersion("0.5.0-alpha")]
+
 internal static class Uninstaller
 {
     private const string AppName = "NL Audio Matrix";
@@ -32,21 +33,24 @@ internal static class Uninstaller
 
     private static void Error(string text)
     {
-        if (!silent)
-            MessageBox.Show(text, AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+        if (!silent) MessageBox.Show(text, AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
 
     private static int Run(string exe, string arguments)
     {
-        var psi = new ProcessStartInfo(exe, arguments)
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
         try
         {
+            var psi = new ProcessStartInfo(exe, arguments)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
             using (var p = Process.Start(psi))
             {
+                p.StandardOutput.ReadToEnd();
+                p.StandardError.ReadToEnd();
                 p.WaitForExit();
                 return p.ExitCode;
             }
@@ -67,23 +71,34 @@ internal static class Uninstaller
                 return 1;
             }
 
-            var appDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                                      AppName);
+            var appDir = "";
+            using (var key = Registry.LocalMachine.OpenSubKey(
+                       @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\NLMatrix"))
+                if (key != null) appDir = key.GetValue("InstallLocation") as string;
+            if (string.IsNullOrWhiteSpace(appDir))
+                appDir = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+
             Run("taskkill.exe", "/f /im NLMatrixUI.exe");
             Run("taskkill.exe", "/f /im NLMatrixRouter.exe");
 
-            var devcon = Path.Combine(appDir, "devcon.exe");
+            var devcon = Path.Combine(appDir, "driver", "devcon.exe");
             if (File.Exists(devcon))
+            {
                 Run(devcon, "remove Root\\NLMatrixVirtualAudio");
                 Run(devcon, "remove Root\\sysvad_ComponentizedAudioSample");
+            }
 
+            // Remove only driver packages whose INF belongs to NLMatrix.  Other
+            // DriverStore packages, Focusrite, VB-CABLE and all user devices are
+            // deliberately left untouched.
             var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
             foreach (var inf in Directory.GetFiles(Path.Combine(windows, "INF"), "oem*.inf"))
             {
                 try
                 {
                     var text = File.ReadAllText(inf);
-                    if (text.IndexOf("NLMatrix Virtual Audio Device", StringComparison.OrdinalIgnoreCase) >= 0)
+                    if (text.IndexOf("NLMatrix Virtual Audio Device", StringComparison.OrdinalIgnoreCase) >= 0
+                        || text.IndexOf("NLMatrixAudio.sys", StringComparison.OrdinalIgnoreCase) >= 0)
                         Run("pnputil.exe", "/delete-driver \"" + inf + "\" /uninstall /force");
                 }
                 catch { }
@@ -100,8 +115,7 @@ internal static class Uninstaller
             }
             catch { }
 
-            var startMenu = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms),
-                                         AppName);
+            var startMenu = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms), AppName);
             try { if (Directory.Exists(startMenu)) Directory.Delete(startMenu, true); } catch { }
 
             var script = Path.Combine(Path.GetTempPath(),
@@ -117,7 +131,7 @@ internal static class Uninstaller
                 CreateNoWindow = true
             });
 
-            Info("NL Audio Matrix and its virtual audio driver were removed.\n\n" +
+            Info("NL Audio Matrix and its NL virtual audio driver were removed.\n\n" +
                  "A reboot is recommended if the endpoints are still visible.");
             return 0;
         }

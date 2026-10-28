@@ -1,0 +1,19 @@
+Third-party notices for NL Audio Matrix pre-release packages
+============================================================
+
+JUCE 9.0.4: dual-licensed AGPLv3 / commercial. This pre-release is built with
+the AGPLv3 option; full AGPL text is in AGPL-3.0.txt. Source is available at
+https://github.com/Nicotina4ever/NL-Audio-Matrix.
+
+ASIO SDK headers bundled through JUCE: see ASIO-LICENSE.txt.
+
+NLMatrixAudio.sys is derived from the Microsoft SysVAD Windows-driver sample,
+licensed under the Microsoft Public License (MS-PL); full text in MS-PL.txt.
+The driver is test-signed for the disposable test VM only.
+
+devcon.exe is the Microsoft Windows Driver Kit sample tool, used only by the
+test installer to create/remove the root-enumerated NL matrix device. It is not
+part of the portable user-mode package.
+
+The portable package contains no kernel driver, test certificate, devcon,
+third-party audio device driver, UAD/VB-CABLE component or proprietary tool.

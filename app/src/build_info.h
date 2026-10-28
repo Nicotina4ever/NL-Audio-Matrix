@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 // Build identity.  These values are intentionally in one header so the GUI,
 // router and diagnostics report the same compile-time identity.  CMake may
@@ -9,7 +9,7 @@
 #endif
 
 #ifndef NL_BUILD_VERSION
- #define NL_BUILD_VERSION "0.4.0-alpha"
+ #define NL_BUILD_VERSION "0.5.0-alpha"
 #endif
 
 #ifndef NL_BUILD_ARCH

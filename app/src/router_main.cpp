@@ -26,6 +26,7 @@
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_events/juce_events.h>
 
+#include "build_info.h"
 #include "wasapi_loopback.h"
 #include "process_loopback.h"
 #include "nl_driver_client.h"
@@ -2066,6 +2067,8 @@ namespace
             return 1;
         }
 
+        std::cout << "NL Audio Matrix Router " << nlmatrix::buildVersion()
+                  << " build " << nlmatrix::buildId() << "\n";
         std::cout << "Config: " << configFile.getFullPathName() << "\n";
         std::cout << "ASIO: " << config.asio << "\n";
         gEngineTuning = config.engine;
@@ -4551,6 +4554,7 @@ int main (int argc, char* argv[])
     bool list = false;
     bool validateOnly = false;
     bool matrixTest = false;
+    bool buildInfo = false;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -4569,6 +4573,8 @@ int main (int argc, char* argv[])
             diagnosticsPath = juce::String (argv[++i]);
         else if (arg == "--control" && i + 1 < argc)
             controlCommandPath = juce::String (argv[++i]);
+        else if (arg == "--buildinfo")
+            buildInfo = true;
         else if (arg == "--resampler-test")
             return runResamplerSelfTest();
         else if (arg == "--matrix-test")
@@ -4590,6 +4596,11 @@ int main (int argc, char* argv[])
             std::cerr << "Could not open router diagnostics log\n";
     }
 
+    if (buildInfo)
+    {
+        std::cout << nlmatrix::buildVersion() << " " << nlmatrix::buildId() << "\n";
+        return 0;
+    }
     if (inspectAsioName.isNotEmpty())
         return inspectAsioDevice (inspectAsioName);
     if (matrixTest)

@@ -4206,6 +4206,8 @@ namespace
             deviceFormats = selftestDeviceFormats;
 
             results.insert (0, "NL Audio Matrix GUI self-test");
+            results.insert (1, juce::String ("build=") + nlmatrix::buildVersion()
+                                   + " id=" + nlmatrix::buildId());
             const auto body = results.joinIntoString ("\n");
             juce::StringArray bodyLines;
             bodyLines.addLines (body);
@@ -8664,7 +8666,7 @@ namespace
     {
     public:
         const juce::String getApplicationName() override { return "NL Audio Matrix"; }
-        const juce::String getApplicationVersion() override { return "0.4.0-alpha"; }
+        const juce::String getApplicationVersion() override { return nlmatrix::buildVersion(); }
         bool moreThanOneInstanceAllowed() override { return true; }
 
         void initialise (const juce::String&) override

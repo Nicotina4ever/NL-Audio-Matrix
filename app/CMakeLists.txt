@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(NLMatrix VERSION 0.4.0 LANGUAGES C CXX)
+project(NLMatrix VERSION 0.5.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,6 +15,24 @@ endif()
 set(JUCE_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(JUCE_BUILD_EXTRAS OFF CACHE BOOL "" FORCE)
 add_subdirectory("${JUCE_DIR}" "${CMAKE_BINARY_DIR}/JUCE")
+
+# Build identity shared by GUI and router.  The release pipeline reads
+# BUILD_INFO.json generated from these values; both executables must report the
+# same commit and Build ID.
+execute_process(
+    COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}/.." rev-parse --short HEAD
+    OUTPUT_VARIABLE NL_GIT_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE NL_GIT_RESULT)
+if(NOT NL_GIT_RESULT EQUAL 0 OR NL_GIT_COMMIT STREQUAL "")
+    set(NL_GIT_COMMIT "nogit")
+endif()
+string(TIMESTAMP NL_BUILD_STAMP "%Y%m%d-%H%M")
+set(NL_BUILD_ID "${NL_BUILD_STAMP}-${NL_GIT_COMMIT}")
+message(STATUS "NL Audio Matrix build id: ${NL_BUILD_ID}")
+add_compile_definitions(
+    NL_BUILD_VERSION="${PROJECT_VERSION}-alpha"
+    NL_BUILD_ID="${NL_BUILD_ID}")
 
 function(nlmatrix_console_app target)
     juce_add_console_app(${target}
@@ -90,7 +108,7 @@ juce_add_gui_app(NLMatrixUI
     PRODUCT_NAME "NLMatrixUI"
     COMPANY_NAME "Nicola Lanci"
     BUNDLE_ID "com.nicolalanci.nlaudiomatrix"
-    VERSION "0.4.0"
+    VERSION "0.5.0"
     NEEDS_WEB_BROWSER FALSE
     NEEDS_CURL FALSE
     ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/../assets/nlmatrix_icon_big.png"
@@ -108,8 +126,8 @@ set_property(TARGET NLMatrixUI PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
 target_compile_definitions(NLMatrixUI PRIVATE JUCE_USER_DEFINED_RC_FILE="${CMAKE_CURRENT_SOURCE_DIR}/src/NLMatrixUI.rc")
 set_target_properties(NLMatrixUI PROPERTIES
     JUCE_COMPANY_NAME "Nicola Lanci"
-    JUCE_VERSION "0.4.0"
-    JUCE_BUILD_VERSION "0.4.0")
+    JUCE_VERSION "0.5.0"
+    JUCE_BUILD_VERSION "0.5.0")
 target_link_libraries(NLMatrixUI PRIVATE
     juce::juce_gui_basics
     juce::juce_gui_extra
