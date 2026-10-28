@@ -78,12 +78,65 @@ internal static class Installer
         return File.Exists(path) ? File.ReadAllText(path) : "";
     }
 
+    private static void StopProcessesUnder(string installDir)
+    {
+        var prefix = Path.GetFullPath(installDir).TrimEnd('\\') + "\\";
+        foreach (var process in Process.GetProcesses())
+        {
+            try
+            {
+                var path = process.MainModule != null ? process.MainModule.FileName : "";
+                if (!string.IsNullOrEmpty(path)
+                    && path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                    && process.Id != Process.GetCurrentProcess().Id)
+                {
+                    try { process.Kill(); process.WaitForExit(3000); } catch { }
+                }
+            }
+            catch { }
+        }
+    }
+
+    private static void ScheduleDelete(string path)
+    {
+        try
+        {
+            var cmd = "/c \"timeout /t 2 /nobreak >nul & rmdir /s /q \\\"" + path + "\\\"\"";
+            Process.Start(new ProcessStartInfo("cmd.exe", cmd)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+        }
+        catch { }
+    }
+
     private static void CleanDirectory(string path)
     {
         var full = Path.GetFullPath(path).TrimEnd('\\');
         if (full.Length < 4 || Path.GetPathRoot(full).TrimEnd('\\').Equals(full, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Refusing to clean an unsafe installation path: " + full);
-        if (Directory.Exists(full)) Directory.Delete(full, true);
+        if (!Directory.Exists(full))
+        {
+            Directory.CreateDirectory(full);
+            return;
+        }
+
+        try
+        {
+            Directory.Delete(full, true);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException || ex is IOException)
+        {
+            // Some old runtime DLL/EXE can still be mapped even after taskkill.
+            // Move the directory aside, create the clean install folder, and
+            // remove the old tree after this installer exits.  A later run also
+            // removes stale .old-* folders; they are never used as backups.
+            var old = full + ".old-" + Guid.NewGuid().ToString("N");
+            Directory.Move(full, old);
+            Directory.CreateDirectory(full);
+            try { Directory.Delete(old, true); } catch { ScheduleDelete(old); }
+        }
         Directory.CreateDirectory(full);
     }
 
@@ -144,6 +197,23 @@ internal static class Installer
         }
     }
 
+    private static bool ServiceRunning(string serviceName)
+    {
+        var psi = new ProcessStartInfo("sc.exe", "query " + serviceName)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        using (var p = Process.Start(psi))
+        {
+            var text = (p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd()).ToUpperInvariant();
+            p.WaitForExit();
+            return text.Contains("RUNNING");
+        }
+    }
+
     private static bool InstallDriver(string driverDir)
     {
         var devcon = Path.Combine(driverDir, "devcon.exe");
@@ -153,13 +223,13 @@ internal static class Installer
         if (!File.Exists(devcon) || !File.Exists(inf) || !File.Exists(sys) || !File.Exists(cer))
             throw new IOException("Driver payload is incomplete.");
 
-        var installedSys = Path.Combine(Environment.SystemDirectory, "drivers", "NLMatrixAudio.sys");
-        var sameDriver = File.Exists(installedSys)
-                         && Hash(installedSys).Equals(Hash(sys), StringComparison.OrdinalIgnoreCase);
         var devicePresent = Run(devcon, "status " + RootHwid) == 0;
-        if (sameDriver && devicePresent)
+        if (devicePresent && ServiceRunning("sysvad_componentizedaudiosample"))
         {
-            Console.WriteLine("NLMatrix driver already current; DriverStore untouched.");
+            // The VM already has the working test driver and endpoints.  Reuse
+            // it: do not stage or alter DriverStore unless the device is absent
+            // or the service is not running.
+            Console.WriteLine("NLMatrix driver already present and running; DriverStore untouched.");
             return false;
         }
 
@@ -172,8 +242,10 @@ internal static class Installer
         Run("certutil.exe", "-addstore -f Root \"" + cer + "\"");
         Run("certutil.exe", "-addstore -f TrustedPublisher \"" + cer + "\"");
 
-        if (Run("pnputil.exe", "/add-driver \"" + inf + "\" /install") != 0)
-            throw new IOException("pnputil failed to stage the NLMatrix driver.");
+        var pnputilExit = Run("pnputil.exe", "/add-driver \"" + inf + "\" /install");
+        // 259 = package already present/updated; 3010 = reboot required.
+        if (pnputilExit != 0 && pnputilExit != 259 && pnputilExit != 3010)
+            throw new IOException("pnputil failed to stage the NLMatrix driver (exit " + pnputilExit + ").");
 
         if (Run(devcon, "status " + LegacyHwid) == 0)
             Run(devcon, "remove " + LegacyHwid);
@@ -216,10 +288,12 @@ internal static class Installer
                 using (var file = File.Create(zipPath)) stream.CopyTo(file);
             }
             var payload = Path.Combine(temp, "payload");
-            ZipFile.ExtractToDirectory(zipPath, payload);
+            ZipFile.ExtractToDirectory(zipPath, temp);
 
             Run("taskkill.exe", "/f /im NLMatrixUI.exe");
             Run("taskkill.exe", "/f /im NLMatrixRouter.exe");
+            StopProcessesUnder(appDir);
+            Environment.CurrentDirectory = temp;
 
             // Reproducible installation folder: remove every obsolete runtime
             // artifact, then copy only the current release payload.  User
