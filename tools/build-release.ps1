@@ -22,7 +22,7 @@ $buildId = if ($parts.Count -gt 1) { $parts[1] } else { 'unknown' }
 if (-not $version) { throw 'Cannot read version from router --buildinfo' }
 $commit = (git -C $root rev-parse HEAD).Trim()
 $shortCommit = (git -C $root rev-parse --short HEAD).Trim()
-$dirty = (git -C $root status --porcelain).Trim()
+$dirty = ((git -C $root status --porcelain) -join [Environment]::NewLine).Trim()
 if ($dirty) { Write-Warning 'Working tree is dirty; release build is not reproducible from a clean commit.' }
 $builtUtc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 
