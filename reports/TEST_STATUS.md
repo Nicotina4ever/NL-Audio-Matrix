@@ -273,7 +273,7 @@ NL Return 1..4; resta un solo record stantio "Altoparlanti" non connesso (nascos
   c'è ed è continuo: non è un guasto degli endpoint ma va indagata la cattura/rate-conversion
   del loopback nel verso di ritorno. Non basta per dichiarare A7 completo.
 
-**Ambiente di test:** `FlexASIO.toml` nella VM puntava al vecchio nome
+**Regressione Quick Connect dopo il cambio identità endpoint/driver:** PASS con client reale (ffmpeg su NL Mic 1, 11.8 s, 999.98 Hz, 0 dropout, 0 splice, router exit 0).
 `Altoparlanti (NLMatrix Virtual Audio Device)`; aggiornato a
 `NL Return 1 (NLMatrix Virtual Audio Device)` (solo harness, non dipendenza di prodotto).
 ## Aggiornamento 2026-10-29 22:10 — Quick Connect con client reale, barra formati GUI, installer 4 modalità (VM)
