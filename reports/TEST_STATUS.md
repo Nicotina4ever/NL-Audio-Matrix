@@ -3,7 +3,7 @@
 **Documento unico di stato test.** Aggiornare questo file soltanto dopo un test
 significativo; non creare report duplicati. Le evidenze restano nei log indicati.
 
-- **Ultimo aggiornamento:** 2026-10-27 21:25 (Europe/Rome)
+- **Ultimo aggiornamento:** 2026-10-29 (Europe/Rome)
 - **Build verificata:** Alpha 0.4.0-alpha. Engine **FINAL5** router SHA256 `2AE82FEB...` (frozen `vm/baseline/NLMatrixRouter_engine_v5_FINAL.exe`) con API per la GUI (--control graceful stop, METERS devices[], exit 24, driverTargetMs), GUI build sha256 `dbd69a86...` (selftest **54/54**, layouts 8/8, cambio formato reale 48k→44.1k→48k via graceful stop), driver ABI3 installato in VM (image SHA256 CD95712E...). Evidenze engine: `reports/engine/final_acceptance_v5/` + `reports/engine/FINAL_STATUS.md`; GUI: `reports/MVP/gui_verify_20261027/`.
 - **Evidenze storiche (cleanup 2026-10-27):** i file di primo livello di `reports/MVP/` (screenshot/WAV/log 24-27/10) sono archiviati in `da_eliminare/2026-10-27-consolidation/reports-superseded/MVP-legacy/` (stessi nomi); restano attive le sottocartelle `reports/MVP/audio/`, `reports/MVP/gui_verify_20261027/`, `reports/MVP/DIAG_HOST_TEST/`. Accettazione e validazione FINAL4 sono in `da_eliminare/2026-10-27-consolidation/reports-superseded/` (`-FINAL4`); evidenze correnti: `reports/engine/final_acceptance_v5/`, `reports/engine/final5_markers/`. Il materiale archiviato è reversibile e consultabile.
 - **Laboratorio principale:** VM Windows 11 x64 con FlexASIO, ReaRoute ASIO x64,
@@ -237,6 +237,40 @@ visibile sia nei contatori kernel sia nel WAV. Rollback:
 multi-ASIO runtime, interazione GUI buffer modes/selftest, recovery con
 disconnessione reale, registrazione vocale post-fix su Focusrite. Vedi `TASKS.md`
 (A4/A5/A9/A10/A11/B4/C11).
+
+## Aggiornamento 2026-10-29 — Installer devcon presence fix + rate fallback e multi-ASIO (VM)
+
+**Build verificata:** Alpha **0.5.0-alpha**, buildId `20261028-0113-7adcedb`, commit
+`40e3829`; router SHA256 `5532A3FD92B...`, GUI SHA256 `58C70B13E...`, driver
+`CD95712E...`; installer corrente hash `05195009...` (rebuild dopo fix `DeviceExists`).
+
+**Fix root cause `devcon update failed` (Priorità 0).** `devcon status <hwid>` esce 0
+anche quando non trova device ("No matching devices found."). Il controllo di
+presenza basato sull'exit code (`Run(...) == 0`) quindi considerava presente un
+dispositivo assente e instrada gli install fresh al ramo `devcon update`, che falliva.
+Fix: helper `DeviceExists` basato sull'output (`RunWithOutput` + controllo di
+"No matching devices"). Build + deploy VM completati; install branch verificato
+(device rimosso → installer → `devcon install` EXITCODE=0 → device presente +
+service RUNNING), reuse branch OK, service kernel non stoppabile quindi update
+branch non ri-esercitato direttamente (logica simmetrica al ramo install).
+
+**Rate fallback e multi-ASIO (Priorità 0).** FlexASIO master 96 kHz con `rateAuto`
+(Auto) → EXITCODE=0, engineHealthy, rate 96000 aperto; Manual strict (`rateAuto=false`)
+→ EXITCODE=0, nessun fallback silenzioso; Multi-ASIO (FlexASIO master + ReaRoute ASIO
+extra) → EXITCODE=0, secondo device aperto (inputs/outputs 16/16), engineHealthy, nessun
+exit 23; d1 (ReaRoute) underrun atteso senza client ReaRoute.
+
+**Quick Connect eseguito (2026-10-29, build corrente):** source FlexASIO test tone ->
+NL Mic 1 via router headless (`--config tools/vm/configs/flex_test_256.json
+--seconds 20 --telemetry ... --log ...`) su Alpha 0.5.0-alpha build
+`20261028-0113-7adcedb`: EXITCODE=0, auto-stop, engineHealthy, asioError=false,
+source s0 online (dropped 0, underruns 0), destination d0 online (writerStarved 0,
+ringFill 60 ms = target, driverUsedMs 50 = target, underrun 0). Consumer ReaRoute
+vivo per audio end-to-end e render-side NL Return con client esterno restano aperti.
+
+**Copertura non eseguita in questo ciclo:** update branch installer con service fermo,
+consumer ReaRoute vivo per audio end-to-end, render-side NL Return con client esterno
+e Quick Connect verso client esterno.
 
 ## Protocollo di aggiornamento
 

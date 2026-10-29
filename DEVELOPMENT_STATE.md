@@ -1,7 +1,32 @@
 # DEVELOPMENT_STATE — NL Audio Matrix
 
-**Updated:** 2026-10-27 23:45 Europe/Rome
+**Updated:** 2026-10-29 (Europe/Rome)
 **Objective:** complete the audio engine, real Focusrite validation and professional GUI without false PASSes.
+
+## Increment 2026-10-29 — installer devcon presence fix + rate fallback / multi-ASIO VM verification
+
+- Root cause of the reported `devcon update failed` fixed in
+  `installer/NLMatrixInstaller.cs`: `devcon status <hwid>` exits 0 even when no
+  device matches, so the pre-fix presence check (`Run(...) == 0`) treated an
+  absent device as present and routed fresh installs to the `devcon update`
+  branch. Fix: output-based `DeviceExists` helper (RunWithOutput + "No
+  matching devices" check). New installer build hash `05195009...` (Alpha
+  0.5.0-alpha, buildId `20261028-0113-7adcedb`); deployed to the VM; retest:
+  device removed → installer → install branch (`devcon install`) EXITCODE=0 →
+  device present + service RUNNING; reuse branch OK; service kernel not
+  stoppable so the update branch was not re-exercised directly (symmetric logic).
+- Router Priorità 0 fixes verified in the VM with the current build (FlexASIO
+  master + ReaRoute extra):
+  - Auto fallback (`rateAuto`, FlexASIO master 96 kHz): EXITCODE=0, engineHealthy,
+    rate 96000 opened.
+  - Manual strict (`rateAuto=false`): EXITCODE=0, no silent fallback.
+  - Multi-ASIO (FlexASIO master + ReaRoute extra 16/16): EXITCODE=0, second ASIO
+    opened, engineHealthy, no exit 23; ReaRoute d1 starved as expected without a
+    client.
+  - Quick Connect source→NL Matrix end-to-end with the current build: headless
+    router run (`--config tools/vm/configs/flex_test_256.json --seconds 20`) source
+    FlexASIO test tone → NL Mic 1: EXITCODE=0, auto-stop, engineHealthy, asioError
+    false, source underruns 0, destination writerStarved 0 (2026-10-29).
 
 ## Increment 2026-10-27 23:45 — multi-ASIO channel domain, async clocks, 1-based channels
 

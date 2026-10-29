@@ -65,6 +65,38 @@ internal static class Installer
         catch { return -1; }
     }
 
+    private static string RunWithOutput(string exe, string arguments, out int exitCode)
+    {
+        exitCode = -1;
+        var output = new System.Text.StringBuilder();
+        try
+        {
+            var psi = new ProcessStartInfo(exe, arguments)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            using (var p = Process.Start(psi))
+            {
+                output.Append(p.StandardOutput.ReadToEnd());
+                output.Append(p.StandardError.ReadToEnd());
+                p.WaitForExit();
+                exitCode = p.ExitCode;
+            }
+        }
+        catch { exitCode = -1; }
+        return output.ToString();
+    }
+
+    private static bool DeviceExists(string devcon, string hwid)
+    {
+        int exitCode = -1;
+        var output = RunWithOutput(devcon, "status " + hwid, out exitCode);
+        return output.IndexOf("No matching devices", StringComparison.OrdinalIgnoreCase) < 0;
+    }
+
     private static string Hash(string path)
     {
         if (!File.Exists(path)) return "";
@@ -223,7 +255,7 @@ internal static class Installer
         if (!File.Exists(devcon) || !File.Exists(inf) || !File.Exists(sys) || !File.Exists(cer))
             throw new IOException("Driver payload is incomplete.");
 
-        var devicePresent = Run(devcon, "status " + RootHwid) == 0;
+        var devicePresent = DeviceExists(devcon, RootHwid);
         if (devicePresent && ServiceRunning("sysvad_componentizedaudiosample"))
         {
             // The VM already has the working test driver and endpoints.  Reuse
@@ -247,16 +279,31 @@ internal static class Installer
         if (pnputilExit != 0 && pnputilExit != 259 && pnputilExit != 3010)
             throw new IOException("pnputil failed to stage the NLMatrix driver (exit " + pnputilExit + ").");
 
-        if (Run(devcon, "status " + LegacyHwid) == 0)
+        if (DeviceExists(devcon, LegacyHwid))
             Run(devcon, "remove " + LegacyHwid);
 
-        if (Run(devcon, "status " + RootHwid) == 0)
+        if (devicePresent)
         {
-            if (Run(devcon, "update \"" + inf + "\" " + RootHwid) != 0)
-                throw new IOException("devcon update failed.");
+            int updateExit = -1;
+            var updateOut = RunWithOutput(devcon, "update \"" + inf + "\" " + RootHwid, out updateExit);
+            if (updateExit != 0)
+            {
+                var detail = "devcon update failed for " + RootHwid + " (exit " + updateExit + ").\n" + updateOut;
+                try { File.WriteAllText(Path.Combine(Path.GetTempPath(), "NLMatrixSetup-error.log"), detail); } catch { }
+                throw new IOException(detail.Trim());
+            }
         }
-        else if (Run(devcon, "install \"" + inf + "\" " + RootHwid) != 0)
-            throw new IOException("devcon install failed.");
+        else
+        {
+            int installExit = -1;
+            var installOut = RunWithOutput(devcon, "install \"" + inf + "\" " + RootHwid, out installExit);
+            if (installExit != 0)
+            {
+                var detail = "devcon install failed for " + RootHwid + " (exit " + installExit + ").\n" + installOut;
+                try { File.WriteAllText(Path.Combine(Path.GetTempPath(), "NLMatrixSetup-error.log"), detail); } catch { }
+                throw new IOException(detail.Trim());
+            }
+        }
         return reboot;
     }
 

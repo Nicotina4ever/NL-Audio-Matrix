@@ -408,6 +408,7 @@ namespace
         double sampleRate = 48000.0;
         int bufferSize = 0;
         bool clockMaster = false;
+        bool rateAuto = true;
     };
 
     struct SourceDef
@@ -599,6 +600,7 @@ namespace
                 if (d.sampleRate <= 0.0) d.sampleRate = 48000.0;
                 d.bufferSize = (int) prop (item, "buffer").toString().getIntValue();
                 d.clockMaster = (bool) prop (item, "clockMaster");
+                d.rateAuto = prop (item, "rateAuto").isVoid() ? true : (bool) prop (item, "rateAuto");
                 if (d.id.isEmpty() || d.backend.isEmpty())
                 {
                     error = "device needs id and backend";
@@ -2147,21 +2149,39 @@ namespace
         juce::BigInteger inMask;
         inMask.setRange (0, asioIns.size(), true);
 
-        auto asioError = asioDevice->open (inMask, outMask, requestedRate, requestedBuffer);
+        double rateToOpen = requestedRate;
+        int bufferToOpen = requestedBuffer > 0 ? requestedBuffer : 256;
+        const bool masterRateAuto = mainDeviceDef == nullptr || mainDeviceDef->rateAuto;
+        if (masterRateAuto)
+        {
+            const auto availableRates = asioDevice->getAvailableSampleRates();
+            if (! availableRates.isEmpty() && ! availableRates.contains (requestedRate))
+            {
+                rateToOpen = availableRates[0];
+                std::cout << "Master sample rate Auto: requested " << requestedRate
+                          << " Hz is not available; falling back to " << rateToOpen
+                          << " Hz.\n";
+            }
+            const auto availableBuffers = asioDevice->getAvailableBufferSizes();
+            if (! availableBuffers.isEmpty() && ! availableBuffers.contains (bufferToOpen))
+                bufferToOpen = availableBuffers[0];
+        }
+
+        auto asioError = asioDevice->open (inMask, outMask, rateToOpen, bufferToOpen);
         if (asioError.isNotEmpty() && needOutputs)
         {
             // Some ASIO drivers only accept the full output mask.  Fall back
             // explicitly and report it; never silently claim unused outputs.
             std::cerr << "Selective ASIO output mask rejected by the driver; retrying with all outputs.\n";
             outMask.setRange (0, asioOuts.size(), true);
-            asioError = asioDevice->open (inMask, outMask, requestedRate, requestedBuffer);
+            asioError = asioDevice->open (inMask, outMask, rateToOpen, bufferToOpen);
         }
         if (asioError.isNotEmpty() && ! needOutputs)
         {
             // A few drivers require at least one output stream to open; this is
             // a compatibility fallback, not a graph destination.
             outMask.setRange (0, asioOuts.size(), true);
-            asioError = asioDevice->open (inMask, outMask, requestedRate, requestedBuffer);
+            asioError = asioDevice->open (inMask, outMask, rateToOpen, bufferToOpen);
         }
         if (asioError.isNotEmpty())
         {
@@ -2176,10 +2196,13 @@ namespace
                   << asioBufferActual << " (requested "
                   << requestedRate << " Hz / " << requestedBuffer
                   << (mainDeviceDef != nullptr ? " by device definition" : " default") << ")\n";
-        if (requestedRate > 0.0 && std::abs (asioRate - requestedRate) > 0.5)
+        if (masterRateAuto && rateToOpen != requestedRate)
+            std::cout << "Master sample rate Auto: effective rate " << rateToOpen
+                      << " Hz (fallback from requested " << requestedRate << " Hz).\n";
+        if (rateToOpen > 0.0 && std::abs (asioRate - rateToOpen) > 0.5)
         {
             std::cerr << "Device format not available: requested ASIO rate "
-                      << requestedRate << " Hz but the driver opened " << asioRate
+                      << rateToOpen << " Hz but the driver opened " << asioRate
                       << " Hz (exit 24)\n";
             asioDevice->close();
             return 24;
@@ -2231,7 +2254,11 @@ namespace
             if (! extra->open (driver, needInputs, needOutputs, deviceDef.sampleRate,
                                deviceDef.bufferSize, openError))
             {
-                std::cerr << "Extra ASIO device failed: " << openError << "\n";
+                std::cerr << "Extra ASIO device failed: " << driver
+                          << " (needInputs=" << needInputs << ", needOutputs=" << needOutputs
+                          << ", requestedRate=" << deviceDef.sampleRate
+                          << ", requestedBuffer=" << deviceDef.bufferSize << "): "
+                          << openError << "\n";
                 return 23;
             }
             std::cout << "Extra ASIO: " << driver << " at " << extra->getRate() << " Hz, inputs=" << extra->getOpenedInputs() << ", outputs=" << extra->getOpenedOutputs() << "\n";
@@ -3819,6 +3846,7 @@ namespace
                     di->setProperty ("clockMaster", dd.clockMaster);
                     di->setProperty ("requestedRate", dd.sampleRate);
                     di->setProperty ("requestedBuffer", dd.bufferSize);
+                    di->setProperty ("rateAuto", dd.rateAuto);
                     double deviceActualRate = -1.0;
                     int deviceActualBuffer = -1;
                     int deviceInputs = -1;
