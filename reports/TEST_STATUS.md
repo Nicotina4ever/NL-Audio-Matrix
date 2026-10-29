@@ -3,8 +3,8 @@
 **Documento unico di stato test.** Aggiornare questo file soltanto dopo un test
 significativo; non creare report duplicati. Le evidenze restano nei log indicati.
 
-- **Ultimo aggiornamento:** 2026-10-29 22:10 (Europe/Rome)
-- **Build verificata (2026-10-29 22:10):** Alpha 0.5.0-alpha buildId `20261028-0113-7adcedb`; router `5532A3FD`+hardening formato ASIO, GUI con barra formati (selftest VM **67/67**), installer `NLMatrixSetup.exe` SHA256 `6f0ffa28...`, driver ABI3 image `cd95712e...`. Evidenze: `reports/quickconnect/2026-10-29/`, `reports/installer/2026-10-29/` (locali, git-ignored).
+- **Ultimo aggiornamento:** 2026-10-29 23:55 (Europe/Rome)
+- **Build verificata (2026-10-29 23:55):** Alpha 0.5.0-alpha, driver DriverVer `10/29/2026,22.51.28.416` (image rebuilt, endpoint identity A4/A2), GUI selftest VM 67/67; endpoint audio verification `reports/endpoint_audio/2026-10-29/` (locale).
 - **Evidenze storiche (cleanup 2026-10-27):** i file di primo livello di `reports/MVP/` (screenshot/WAV/log 24-27/10) sono archiviati in `da_eliminare/2026-10-27-consolidation/reports-superseded/MVP-legacy/` (stessi nomi); restano attive le sottocartelle `reports/MVP/audio/`, `reports/MVP/gui_verify_20261027/`, `reports/MVP/DIAG_HOST_TEST/`. Accettazione e validazione FINAL4 sono in `da_eliminare/2026-10-27-consolidation/reports-superseded/` (`-FINAL4`); evidenze correnti: `reports/engine/final_acceptance_v5/`, `reports/engine/final5_markers/`. Il materiale archiviato è reversibile e consultabile.
 - **Laboratorio principale:** VM Windows 11 x64 con FlexASIO, ReaRoute ASIO x64,
   NLMatrix Virtual Audio Device (4 coppie), VB-CABLE diagnostico.
@@ -238,6 +238,44 @@ multi-ASIO runtime, interazione GUI buffer modes/selftest, recovery con
 disconnessione reale, registrazione vocale post-fix su Focusrite. Vedi `TASKS.md`
 (A4/A5/A9/A10/A11/B4/C11).
 
+## Aggiornamento 2026-10-29 23:55 — endpoint NL Return 1/4 risolti e otto endpoint con audio reale (VM)
+
+**Diagnosi.** NL Return 1 e NL Return 4 non erano assenti: esistevano e funzionavano, ma i
+loro record MMDevices erano stati creati da una build precedente del driver e conservavano i
+nomi di fallback ("Altoparlanti" per Return 1, "SinkDescription Sample" per Return 4).
+Windows non ricalcola mai il nome di un endpoint esistente; la riparazione diretta è bloccata
+sia per gli amministratori sia per SYSTEM (E_ACCESSDENIED su `MMDevices\...\Properties` e su
+`IMMDevice::OpenPropertyStore(RW)->Commit`; Delete concesso solo a Audiosrv/
+AudioEndpointBuilder/TrustedInstaller, verificato con ACL grant + `reg delete` come SYSTEM).
+Ulteriore causa specifica per Return 1: Windows impone il nome localizzato "Speakers" per i pin
+`KSNODETYPE_SPEAKER`, ignorando FriendlyName e il GUID del pin (verificato aggiungendo il GUID
+su entrambi i pin dello speaker: nessun effetto).
+
+**Correzione strutturale.** Return 1 esposto come `KSNODETYPE_LINE_CONNECTOR` (il nome
+MediaCategories vince); identità degli endpoint rigenerata cambiando le reference string KS
+(`WaveSpeakerA4`/`TopologySpeakerA4`, `WaveHdmiA2`/`TopologyHdmiA2`) così Windows crea nuovi
+record invece di riusare quelli stantii; driver ricostruito (DriverVer
+`10/29/2026,22.51.28.416`) e installato in VM con remove + install + reboot. I vecchi record
+restano come endpoint scollegati/nascosti.
+
+**Verifica nomi (VM, dopo reinstall):** 8 endpoint attivi e corretti — NL Mic 1..4,
+NL Return 1..4; resta un solo record stantio "Altoparlanti" non connesso (nascosto).
+
+**Verifica audio reale (guest ffmpeg come client):**
+- NL Mic 1..4: quattro toni distinti instradati per canale (1000/1040/1080/1120 Hz), ~12 s
+  continui, RMS −17 dBFS, frequenza entro 0.4 Hz, nessuna diafonia tra endpoint.
+- NL Return 1..4: un client di riproduzione WASAPI reale ha suonato un tono distinto in
+  ciascun endpoint di ritorno; il router li ha catturati con il proprio source WASAPI loopback
+  e instradati Return N -> Mic N. Tutti e quattro i ritorni hanno trasportato audio continuo
+  (RMS ≈ −12 dBFS, 12 s).
+- **Anomalia aperta (A21):** il percorso di ritorno via loopback mostra uno scostamento di
+  frequenza su alcuni canali (999.8/1000, 1079.7/1040, 1071.4/1080, 1139.7/1120 Hz). Il segnale
+  c'è ed è continuo: non è un guasto degli endpoint ma va indagata la cattura/rate-conversion
+  del loopback nel verso di ritorno. Non basta per dichiarare A7 completo.
+
+**Ambiente di test:** `FlexASIO.toml` nella VM puntava al vecchio nome
+`Altoparlanti (NLMatrix Virtual Audio Device)`; aggiornato a
+`NL Return 1 (NLMatrix Virtual Audio Device)` (solo harness, non dipendenza di prodotto).
 ## Aggiornamento 2026-10-29 22:10 — Quick Connect con client reale, barra formati GUI, installer 4 modalità (VM)
 
 Tutte le prove audio/driver sono state eseguite **dentro la VM VMware Player**; l'host

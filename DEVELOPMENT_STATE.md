@@ -1,8 +1,61 @@
 # DEVELOPMENT_STATE — NL Audio Matrix
 
-**Updated:** 2026-10-29 22:10 (Europe/Rome)
+**Updated:** 2026-10-29 23:55 (Europe/Rome)
 **Objective:** complete the audio engine, real Focusrite validation and professional GUI without false PASSes.
 
+## Increment 2026-10-29 23:55 — all 8 NL endpoints: root cause, structural fix, real-audio verification
+
+Driver DriverVer `10/29/2026,22.51.28.416`; installer rebuilt (`NLMatrixSetup.exe`); all
+tests in the VMware VM. Commit with this document.
+
+- **Diagnosis (no repair by guessing).** The two "missing" render endpoints were never
+  absent: MMDevices held four active render records, but two carried stale fallback
+  names. Evidence chain: INF publishes `NL Return 1..4` in MediaCategories and the KS
+  interface `FriendlyName`; the bound driver binary contains `SINK_DESC_STR L"NL Return 4"`
+  and nothing resembling "SinkDescription Sample"; MMDevices records
+  `{0c0cfc52}` (Return 1) and `{6cfbab01}` (Return 4) had `DeviceDesc` = "Altoparlanti"
+  and "SinkDescription Sample"; their endpoint `FriendlyName` value was absent; the
+  records were created by an older driver build and Windows never re-derives names of
+  existing endpoint records. Direct registry repair is impossible on current Windows:
+  Administrators (and even SYSTEM) get E_ACCESSDENIED on `MMDevices\...\Properties`
+  and on `IMMDevice::OpenPropertyStore(STGM_READWRITE)->Commit`, while Delete is
+  granted only to Audiosrv/AudioEndpointBuilder/TrustedInstaller (verified by trying
+  ACL grant + `reg delete` as SYSTEM and the MMDevice property-store path).
+- **Structural fixes.**
+  1. *Return 4 (HDMI):* the current binary already uses `NL Return 4` as HDMI sink
+     description; the stale record only needed a fresh endpoint identity.
+  2. *Return 1 (speaker):* Windows forces the localized "Speakers"/"Altoparlanti"
+     display name for pins whose category is `KSNODETYPE_SPEAKER`, ignoring both the
+     interface `FriendlyName` and a `KSPIN_DESCRIPTOR.Name` GUID (tested: adding the
+     custom-name GUID to both speaker topology pins did not change it). The endpoint is
+     now exposed as `KSNODETYPE_LINE_CONNECTOR`, which lets the MediaCategories name
+     win (verified: "NL Return 1 (NLMatrix Virtual Audio Device)").
+  3. *Fresh endpoint identity:* KS subdevice reference strings bumped in
+     `minipairs.h` + INF (`WaveSpeakerA4`/`TopologySpeakerA4`, `WaveHdmiA2`/`TopologyHdmiA2`)
+     so Windows creates new endpoint records instead of reusing the stale ones. Old
+     records remain as unplugged/hidden entries, which is harmless.
+- **Verified in the VM after driver remove + install (installer payload) + reboot:**
+  eight active endpoints, correctly named: **NL Mic 1..4** and **NL Return 1..4**;
+  one stale unplugged "Altoparlanti" record remains hidden. `NLMatrixDriverAudioTest`
+  and the router report the NL Return endpoints at their real mix rates (44100/48000).
+- **Real-audio verification (tools/vm/Run-EndpointAudioVerification.ps1; guest ffmpeg
+  records each endpoint):**
+  - NL Mic 1..4: four distinct tones (1000/1040/1080/1120 Hz) routed per channel,
+    ~12 s continuous, RMS -17 dBFS, frequency within 0.4 Hz, no cross-talk
+    (each endpoint carried only its own tone).
+  - NL Return 1..4: a real WASAPI playback client played a distinct tone into each
+    return endpoint; the router captured it with its native WASAPI loopback source and
+    routed Return N -> Mic N. All four returns carried continuous audio (RMS about
+    -12 dBFS, 12 s), so the return endpoints are electrically/functionally live.
+  - **Open anomaly (not silence):** the loopback return path shows a frequency offset
+    on some channels - Return1 999.8/1000, Return2 1079.7/1040, Return3 1071.4/1080,
+    Return4 1139.7/1120 Hz. The tones are present and continuous; the offset points at
+    the loopback capture/rate-conversion path of the return direction (to be
+    investigated), not at the endpoints themselves. Tracked in TASKS A21.
+- **Test-environment note:** FlexASIO's `FlexASIO.toml` in the VM referenced the old
+  endpoint name `Altoparlanti (NLMatrix Virtual Audio Device)`; after the rename it was
+  updated to `NL Return 1 (NLMatrix Virtual Audio Device)` (test harness only, not a
+  product dependency).
 ## Increment 2026-10-29 22:10 — Quick Connect with a real Windows client, GUI format bar, installer modes
 
 Commit `01c6f2d`. All audio/driver tests below ran **inside the VMware Player VM**;

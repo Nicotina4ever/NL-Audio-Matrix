@@ -15,7 +15,7 @@ Historical backlog: `docs/TASKS_HISTORY.md`. Engine architecture: `docs/ENGINE_V
 | A3 | Sample continuity diagnostics | DONE — FINAL4 accepted | Engine A/B on ABI3 driver: underruns 0 / ring drops 0 (engine v2) vs 13–63 per run (legacy). FINAL4 acceptance (frozen AB5E363F, accurate NLMatrix test clock, analyzer 1.2.0 split verdicts): safe x2, balanced, late-consumer, GUI profile = engine/writer PASS + WAV PASS (0 gaps, 0 steady real splices, tone ~1000 Hz); only startup-only kernel underrun deltas 480–12576 B classified WARN. Evidence: `reports/engine/final_acceptance_v5/FINAL_ACCEPTANCE.md`, `reports/engine/final5_markers/`; FINAL4 raw evidence archiviata in `da_eliminare/2026-10-27-consolidation/reports-superseded/` (-FINAL4) |
 | A4 | Engine lifecycle detection/recovery | TESTING | Watchdog (2 s stall→ASIO restart state machine; startup false positive fixed), driver/endpoint reconnect with stale-ring drain, no-consumer drain, engine state in METERS. Runtime disconnection exercise on real hardware pending |
 | A5 | End-to-end latency measurement | LIMITATO — method validated, definitive hardware number pending | Marker method on FINAL4 + accurate NLMatrix clock + first-callback timestamp recorder: median 38.96–45.46 ms (min 30.06 / max 50.55), ringFill 10–21 ms, driverUsed 50 ms; a ~35–45 ms discrepancy vs the 85–110 ms queue model remains unresolved (WAV→wall timestamp mapping) and is documented. External click path 1484.7 ms is NOT graph latency. Hardware/impulse measurement on a physical path (Focusrite) pending; tooling ready (`vm/engine/latency_focusrite_markers.json`, `tools/measure_engine_latency.py`) |
-| A6 | NL Return 1/4 persistent names | BLOCKED — concrete evidence (VM, 2026-10-29) | Only 6 of 8 endpoints activate: NL Mic 1..4 + NL Return 2/3 OK, **NL Return 1 and NL Return 4 never activate**, reproduced across installer upgrade/repair/uninstall+reboot+clean install. Driver-side endpoint provisioning (INF/device list), not installer. Blocks 4+2 preset and A7 |
+| A6 | NL Return 1/4 names and provisioning | DONE (VM, 2026-10-29) | Root cause: both endpoints existed and streamed; their MMDevices records were created by an older driver build and kept fallback names ("Altoparlanti" for Return 1, "SinkDescription Sample" for Return 4); Windows never re-derives endpoint names, and direct record repair is ACL-blocked even for SYSTEM. Fix: Return 1 exposed as KSNODETYPE_LINE_CONNECTOR (Windows forces the localized "Speakers" name for KSNODETYPE_SPEAKER pins, regardless of FriendlyName/pin-name GUID), fresh endpoint identity via KS reference-string bump (WaveSpeakerA4/TopologySpeakerA4, WaveHdmiA2/TopologyHdmiA2), driver DriverVer 10/29/2026 22.51.28.416 installed in VM. Verified: 8 active endpoints named NL Mic 1..4 / NL Return 1..4 after remove+install+reboot |
 | A7 | Four NL Mic pairs both directions | TESTING | Engine v2: four test tones → NL Mic 1..4, destination underruns/drops 0 (engine side). Reverse NL Return→NL Mic remains open |
 | A8 | Bus and mix-minus end-to-end | TODO | REAPER→ReaRoute→bus→NL Mic and mix-minus without feedback; WAV evidence (older partial evidence exists) |
 | A9 | Multi-ASIO independent clocks | TESTING — structural channel-domain path fixed; real audio pending | Architecture in place (per-device rings/converters, extra-ASIO callbacks). FINAL4 multi_asio opened both devices, no asioError/hang; d1 ReaRoute starved because no client. 2026-10-27 fix: extra-ASIO sources/destinations are now validated against **their own** channel inventory (not the master's) and the adaptive converter runs **always** for async sources/extra destinations, including same nominal rate, to absorb clock drift. Structural VM test: FlexASIO master + ReaRoute extra 16/16, source/destination channels 15/16 accepted; converterTrimPpm ≈ +185 ppm on the extra source. Real signal/clock proof needs a live ReaRoute client or a second physical ASIO device. 2026-10-29 VM real tests: Auto fallback (FlexASIO master 96 kHz, rateAuto) → EXITCODE=0, engineHealthy, rate 96000 opened; Manual strict (rateAuto=false) → EXITCODE=0, no silent fallback; Multi-ASIO (FlexASIO + ReaRoute extra) → EXITCODE=0, second ASIO opened (16/16), engineHealthy, no exit 23. Real ReaRoute client signal still pending |
@@ -63,7 +63,8 @@ Historical backlog: `docs/TASKS_HISTORY.md`. Engine architecture: `docs/ENGINE_V
 | A17 | Quick Connect with a real Windows client (no OBS) | DONE (VM, 2026-10-29) | `tools/vm/Run-QuickConnectRealClient.ps1`: guest ffmpeg 9.0.2 captures the **NL Mic 1** endpoint via DirectShow while the router feeds it (single ASIO channel -> NL Mic 1). Negative control without router = silence (-98 dBFS). Positive: 12.2 s at RMS -17.0 dBFS, FFT 999.98–1000.02 Hz, 0 dropouts, 0 splices, drift -2.6..-5.7 ppm, router EXITCODE=0, analyzer PASS; repeated PASS before/after driver reinstall and after clean install. Evidence `reports/quickconnect/2026-10-29/` (local) |
 | A18 | GUI ASIO format access (rate/buffer, Auto/Manual, buffer modes) | DONE (VM GUI selftest 67/67) | Main-window audio bar: master ASIO row + one row per extra ASIO driver with rate, buffer, Auto/Manuale and actual-value column; engine Low/Balanced/Safe/Avanzate reachable without Preferences (Advanced exposes numeric fields); apply = graceful stop/restart; `rateAuto` round-trips profile/preferences/last-session/devices[] |
 | A19 | Per-device ASIO format negotiation (router) | DONE (VM) — rate-fallback branch untested in VM | Extra-ASIO `rateAuto` honored (was master-only); Auto picks nearest supported rate and smallest supported buffer >= request; Manual never silently changes the rate (pre-check from published list, post-open strict check otherwise); buffer is a request with reported `bufferFallback`; METERS devices[] expose rateAuto/rateFallback/bufferFallback/effectiveBuffer/availableRates/availableBuffers. VM: FlexASIO 256->960 and ReaRoute extra 128->1024 fallbacks observed; both VM drivers accept arbitrary rates and publish `rates=[]`, so nearest-rate fallback needs a driver that publishes a rate list |## D. Build, deployment, platform
-
+| A20 | All eight NL endpoints with real audio | PASS (VM, 2026-10-29) | `tools/vm/Run-EndpointAudioVerification.ps1` + guest ffmpeg: NL Mic 1..4 carried four distinct tones (1000/1040/1080/1120 Hz, ~12 s, RMS -17 dBFS, no cross-talk); NL Return 1..4 each carried a playback tone captured through the router loopback (RMS about -12 dBFS, 12 s). Endpoint names verified: NL Mic 1..4 + NL Return 1..4 active |
+| A21 | Return-path loopback frequency accuracy | TODO — open anomaly | Tones played into NL Return N are captured through the WASAPI loopback source with a frequency offset on some channels: 999.8/1000, 1079.7/1040, 1071.4/1080, 1139.7/1120 Hz (signal present and continuous, so not a routing failure). Suspect loopback capture rate / conversion in the return direction; needs a dedicated test (e.g. play a known WAV and compare duration/pitch) before marking A7 |
 | ID | Task | Status | Completion criterion / evidence |
 |---|---|---|---|
 | D1 | Build ID in GUI/diagnostics | DONE | Title/About show version + compile Build ID; SHA256 recorded |
@@ -79,23 +80,25 @@ Historical backlog: `docs/TASKS_HISTORY.md`. Engine architecture: `docs/ENGINE_V
 | D11 | Installer install/repair/upgrade/uninstall modes | DONE (VM, 2026-10-29) | `--mode install|repair|upgrade|uninstall /silent`, exit-code table 0/1/2/…/20, `%TEMP%\NLMatrixSetup-<mode>.log`, ARP ModifyPath→repair, presets kept on uninstall/repair. VM: upgrade 0, repair 0, uninstall 20+reboot then clean state, clean install 0, repeat 0 |
 ## Next active objectives (priority order)
 
-1. **Driver endpoints 6/8 (A6/A7) — highest priority**: NL Return 1 and NL Return 4
-   never activate (stable across reinstall). Fix the driver INF/device list so all 8
-   endpoints (4 mic + 4 return) are provisioned, then re-run `Run-QuickConnectRealClient.ps1`
-   and a return-path capture with a real client. Blocks 4+2 preset and A8.
-2. **Hardware Focusrite + latency (B4/A5)**: run the prepared legacy-vs-FINAL5
+1. **Return-path loopback accuracy (A21)**: tones played into NL Return N arrive with a
+   frequency offset through the WASAPI loopback source. Fix/diagnose the loopback capture
+   rate conversion, then re-run `Run-EndpointAudioVerification.ps1 -Phase Return` and mark A7.
+2. **Quick Connect in the GUI + bidirectional routing + Studio features** (user priority):
+   expose Quick Connect as a user-facing action (single ASIO channel -> NL Mic, no OBS),
+   verify the reverse direction with a real client, then mixer/patchbay Studio surface.
+3. **Hardware Focusrite + latency (B4/A5)**: run the prepared legacy-vs-FINAL5
    A/B, real voice recording through NL Mic 1, the marker latency test and the
    new **B7/B8 channel-split/bus tests** (analog loopback of Output 1/2) on a
    physical Windows PC (VM USB passthrough cannot stream the Scarlett).
-3. **Multi-ASIO/Apollo channels (A9/A13/A14)**: real Apollo per-channel capture
+4. **Multi-ASIO/Apollo channels (A9/A13/A14)**: real Apollo per-channel capture
    (10 inputs, distinct signals) and a second simultaneous ASIO device with a
    live consumer; verify independent clocks/drift over a long run and WAV.
    Structural channel-domain/adaptive-SRC fix and 1-based UI are already in the
    dev build; hardware audio proof remains.
-4. **Recovery reale (A4)**: device disconnect/reconnect during routing.
-5. **GUI/release**: DPI 125/150 (C6), remaining English technical prose (C8),
+5. **Recovery reale (A4)**: device disconnect/reconnect during routing.
+6. **GUI/release**: DPI 125/150 (C6), remaining English technical prose (C8),
    installer/signing/licensing (D4, D7, D8).
-6. **Backlog**: C1–C10 remaining, A8, process-loopback on physical Windows, non-ASIO consumer for Quick Connect (browser/voice app) in the VM.
+7. **Backlog**: C1–C10 remaining, A8, process-loopback on physical Windows, non-ASIO consumer for Quick Connect (browser/voice app) in the VM.
 
 ## Known environment limits (do not re-diagnose blindly)
 
