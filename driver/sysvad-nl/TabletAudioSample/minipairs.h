@@ -1,4 +1,4 @@
-﻿/*++
+/*++
 
 Copyright (c) Microsoft Corporation All Rights Reserved
 
@@ -164,12 +164,12 @@ static
 ENDPOINT_MINIPAIR SpeakerMiniports =
 {
     eSpeakerDevice,
-    L"TopologySpeaker",                                     // make sure this or the template name matches with KSNAME_TopologySpeaker in the inf's [Strings] section 
+    L"TopologySpeakerA4",                                   // make sure this or the template name matches with KSNAME_TopologySpeaker in the inf's [Strings] section 
     NULL,                                                   // optional template name
     CreateMiniportTopologySYSVAD,
     &SpeakerTopoMiniportFilterDescriptor,
     0, NULL,                                                // Interface properties
-    L"WaveSpeaker",                                         // make sure this or the template name matches with KSNAME_WaveSpeaker in the inf's [Strings] section
+    L"WaveSpeakerA4",                                       // make sure this or the template name matches with KSNAME_WaveSpeaker in the inf's [Strings] section
     NULL,                                                   // optional template name
     CreateMiniportWaveRTSYSVAD,
     &SpeakerWaveMiniportFilterDescriptor,
@@ -261,12 +261,12 @@ static
 ENDPOINT_MINIPAIR HdmiMiniports =
 {
     eHdmiRenderDevice,
-    L"TopologyHdmi",                        // make sure this or the template name matches with KSNAME_TopologyHdmi in the inf's [Strings] section 
+    L"TopologyHdmiA2",                      // make sure this or the template name matches with KSNAME_TopologyHdmi in the inf's [Strings] section 
     NULL,                                   // optional template name
     CreateHdmiMiniportTopology,
     &HdmiTopoMiniportFilterDescriptor,
     0, NULL,                                // Interface properties
-    L"WaveHdmi",                            // make sure this or the template name matches with KSNAME_WaveHdmi in the inf's [Strings] section
+    L"WaveHdmiA2",                          // make sure this or the template name matches with KSNAME_WaveHdmi in the inf's [Strings] section
     NULL,                                   // optional template name
     CreateMiniportWaveRTSYSVAD,
     &HdmiWaveMiniportFilterDescriptor,

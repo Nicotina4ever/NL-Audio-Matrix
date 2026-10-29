@@ -63,7 +63,7 @@ PCPIN_DESCRIPTOR SpeakerTopoMiniportPins[] =
       KSPIN_DATAFLOW_IN,                                // DataFlow
       KSPIN_COMMUNICATION_NONE,                         // Communication
       &KSCATEGORY_AUDIO,                                // Category
-      NULL,                                             // Name
+      &SPEAKER_CUSTOM_NAME,                             // Name
       0                                                 // Reserved
     }
   },
@@ -82,7 +82,7 @@ PCPIN_DESCRIPTOR SpeakerTopoMiniportPins[] =
       SpeakerTopoPinDataRangePointersBridge,            // DataRanges
       KSPIN_DATAFLOW_OUT,                               // DataFlow
       KSPIN_COMMUNICATION_NONE,                         // Communication
-      &KSNODETYPE_SPEAKER,                              // Category
+      &KSNODETYPE_LINE_CONNECTOR,                       // Category
       &SPEAKER_CUSTOM_NAME,                             // Name
       0                                                 // Reserved
     }
