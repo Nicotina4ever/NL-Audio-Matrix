@@ -63,10 +63,12 @@ $versionText = @(
 ) -join [Environment]::NewLine
 Set-Content (Join-Path $stagingRoot 'VERSION.txt') -Value ($versionText + [Environment]::NewLine) -Encoding ASCII
 
-# Build the uninstaller into the installer app payload.
+# Build the uninstaller into the installer app payload. The setup helpers are
+# shared with the installer (NLSetupCommon.cs) and must be compiled into both.
 $uninstallerExe = Join-Path $app 'NLMatrixUninstall.exe'
 $manifest = Join-Path $root 'installer\installer.manifest'
 $icon = Join-Path $root 'assets\nlmatrix_icon.ico'
+$setupCommon = Join-Path $root 'installer\NLSetupCommon.cs'
 $refs = @(
     '/r:System.dll', '/r:System.Core.dll', '/r:System.Windows.Forms.dll',
     '/r:System.IO.Compression.dll', '/r:System.IO.Compression.FileSystem.dll'
@@ -75,6 +77,7 @@ $refs = @(
     ('/out:' + $uninstallerExe),
     ('/win32manifest:' + $manifest),
     ('/win32icon:' + $icon),
+    $setupCommon,
     (Join-Path $root 'installer\NLMatrixUninstaller.cs')) @refs
 if ($LASTEXITCODE -ne 0) { throw 'Uninstaller build failed' }
 
@@ -110,6 +113,7 @@ $installerArgs = @('/nologo','/target:winexe','/platform:x64','/optimize+',
     ('/resource:' + $payloadZip + ',payload.zip'),
     ('/win32manifest:' + $manifest),
     ('/win32icon:' + $icon),
+    $setupCommon,
     (Join-Path $root 'installer\NLMatrixInstaller.cs')) + $refs
 & $csc $installerArgs
 if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }

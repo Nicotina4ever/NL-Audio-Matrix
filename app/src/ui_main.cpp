@@ -222,6 +222,15 @@ namespace
                 { "Info su NL Audio Matrix", "About NL Audio Matrix" },
                 // ---- main window ----
                 { "Motore ASIO principale", "Main ASIO engine" },
+                { "Scheda audio (master e ASIO aggiuntivi)", "Audio settings (master and extra ASIO)" },
+                { "Applica scheda audio", "Apply audio settings" },
+                { "Dispositivo", "Device" },
+                { "Sample rate", "Sample rate" },
+                { "Rate", "Rate" },
+                { "Buffer", "Buffer" },
+                { "Attivo", "Active" },
+                { "Auto (driver)", "Auto (driver)" },
+                { "Manuale (fisso)", "Manual (fixed)" },
                 { "Pronto", "Ready" },
                 { "Avvia", "Start" },
                 { "Ferma", "Stop" },
@@ -2677,8 +2686,13 @@ namespace
         juce::String deviceId;   // "asio:<driver>" (same id used in the profile)
         juce::String driver;
         juce::String role;       // e.g. "Motore principale" or "usato da: <nodes>"
+        juce::String usedBy;     // nodes referencing this device (localised on display)
         double sampleRate = 0.0;
         int bufferSize = 0;      // 0 = automatic (driver/backend choice)
+        // devices[].rateAuto: true = Auto (accept the rate the driver/Auto
+        // negotiation opens, with the router's documented fallback), false =
+        // Manual (the requested rate is mandatory; no silent fallback).
+        bool rateAuto = true;
     };
 
     // G4: per-device format as reported by the router METERS "devices" array.
@@ -2686,6 +2700,7 @@ namespace
     {
         juce::String id, backend, driver;
         bool clockMaster = false;
+        bool rateAuto = true;
         double requestedRate = 0.0, rate = 0.0;
         int requestedBuffer = 0, buffer = 0;
         int inputs = 0, outputs = 0;
@@ -2709,6 +2724,610 @@ namespace
             png.writeImageToStream (image, *stream);
         }
     }
+
+    // C16: main-window audio format bar.
+    //
+    // Exposes (without opening Preferences):
+    //  - the master ASIO sample rate + buffer with an explicit Auto/Manual rate
+    //    switch (devices[].rateAuto; Auto = accept the driver-negotiated rate,
+    //    Manual = the requested rate is mandatory and the router must not fall
+    //    back);
+    //  - the same sample rate + buffer + Auto/Manual for every extra ASIO
+    //    device.  There is one row per device and the list scrolls, so any
+    //    number of devices works (no 2-device assumption);
+    //  - the Engine v2 buffer mode Low/Balanced/Safe/Advanced (Advanced shows
+    //    its numeric fields inline).
+    //
+    // Applying calls MainComponent::applyDeviceFormatChange, the same path used
+    // by Preferences: validate -> graceful router stop -> rewrite profile and
+    // preferences -> restart -> requested-vs-actual report.  The bar itself does
+    // not own persistence, so GUI -> config JSON -> router and back stay in one
+    // place.
+    class AudioFormatBar final : public juce::Component
+    {
+    public:
+        struct DeviceRowData
+        {
+            juce::String deviceId, driver, usedBy;
+            bool master = false;
+            double sampleRate = 48000.0;
+            int bufferSize = 0;
+            bool rateAuto = true;
+            bool hasActual = false;
+            double actualRate = 0.0;
+            int actualBuffer = 0;
+            bool actualFallback = false;
+        };
+
+        struct Snapshot
+        {
+            std::vector<DeviceRowData> devices;
+            EngineUiSettings engine;
+        };
+
+        std::function<void()> onApply;
+        std::function<void()> onLayoutChanged;
+
+        AudioFormatBar()
+        {
+            addAndMakeVisible (title);
+            L10n::bindLabelText (title, "Scheda audio (master e ASIO aggiuntivi)");
+            title.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+            title.setColour (juce::Label::textColourId, Palette::text);
+            title.setTooltip (L10n::tr ("Sample rate e buffer del master ASIO e di ogni dispositivo ASIO "
+                                        "aggiuntivo, con Auto/Manuale, più il buffer del motore. "
+                                        "Sono gli stessi valori del profilo scritti in devices[] e engine.",
+                                        "Sample rate and buffer of the ASIO master and of every extra ASIO "
+                                        "device, with Auto/Manual, plus the engine buffer. These are the "
+                                        "same profile values written to devices[] and engine."));
+
+            addAndMakeVisible (engineLabel);
+            L10n::bindLabelText (engineLabel, "Buffer del motore");
+            engineLabel.setFont (juce::FontOptions (13.0f));
+            engineLabel.setColour (juce::Label::textColourId, Palette::text.withAlpha (0.85f));
+
+            addAndMakeVisible (engineMode);
+            engineMode.setTooltip (L10n::tr ("Preset del ring buffer dei device (engine v2): "
+                                             "Low = 20-60 ms, Balanced = 60-200 ms, Safe = 150-400 ms. "
+                                             "Avanzate usa i valori numerici espliciti. "
+                                             "Un cambio richiede il riavvio automatico del router.",
+                                             "Device ring-buffer presets (engine v2): "
+                                             "Low = 20-60 ms, Balanced = 60-200 ms, Safe = 150-400 ms. "
+                                             "Advanced uses the explicit numeric values. "
+                                             "Changing it restarts the router automatically."));
+            engineMode.onChange = [this]
+            {
+                if (! selectedModeIsAdvanced())
+                    setAdvancedFields (EngineUiSettings::preset (selectedMode()));
+                updateVisibility();
+                notifyLayoutChanged();
+            };
+
+            addAndMakeVisible (apply);
+            L10n::bindButtonText (apply, "Applica scheda audio");
+            apply.setTooltip (L10n::tr ("Applica sample rate / buffer / Auto-Manuale e il buffer del motore: "
+                                        "il router viene fermato senza click, il profilo e preferences.json "
+                                        "riscritti e il motore riavviato.",
+                                        "Apply sample rate / buffer / Auto-Manual and the engine buffer: the "
+                                        "router is stopped without a click, profile and preferences.json are "
+                                        "rewritten and the engine restarted."));
+            apply.onClick = [this] { if (onApply) onApply(); };
+
+            addAndMakeVisible (rowsContent);
+            rowsViewport.setViewedComponent (&rowsContent, false);
+            rowsViewport.setScrollBarsShown (true, false);
+            rowsViewport.setScrollBarThickness (10);
+            addAndMakeVisible (rowsViewport);
+
+            configureAdvancedField (advRingMinLabel, advRingMinEditor, "Ring minimo (ms)",
+                                    "Fill target iniziale del ring del device, 5..500 ms.",
+                                    "Device ring initial fill target, 5..500 ms.", 60);
+            configureAdvancedField (advRingMaxLabel, advRingMaxEditor, "Ring massimo (ms)",
+                                    "Limite massimo del ring adattivo, >= minimo e <= 500 ms.",
+                                    "Adaptive ring maximum, >= minimum and <= 500 ms.", 200);
+            configureAdvancedField (advDriverMinLabel, advDriverMinEditor, "Driver minimo (ms)",
+                                    "Fill target del ring kernel NLMatrix, 10..500 ms.",
+                                    "NLMatrix kernel ring fill target, 10..500 ms.", 50);
+            configureAdvancedField (advDriverMaxLabel, advDriverMaxEditor, "Driver massimo (ms)",
+                                    "Limite massimo del ring kernel, >= minimo e <= 500 ms.",
+                                    "Kernel ring maximum, >= minimum and <= 500 ms.", 250);
+            configureAdvancedField (advChunkLabel, advChunkEditor, "Chunk scrittura (ms)",
+                                    "Audio massimo scritto per iterazione del servo, 1..50 ms.",
+                                    "Maximum audio written per servo iteration, 1..50 ms.", 5);
+            configureAdvancedField (advServoLabel, advServoEditor, "Intervallo servo (ms)",
+                                    "Periodo del servo writer ad alta risoluzione, 1..20 ms.",
+                                    "High-resolution writer servo period, 1..20 ms.", 2);
+
+            L10n::bindAction ([safe = juce::Component::SafePointer<AudioFormatBar> (this)]
+            {
+                if (safe != nullptr) safe->refreshLocalisedTexts();
+            });
+            refreshEngineItems();
+            setEngine (EngineUiSettings::preset ("balanced"));
+            updateVisibility();
+        }
+
+        // ---- test/state access -------------------------------------------
+        int getRowCount() const { return (int) rows.size(); }
+
+        juce::String getRowDeviceId (int index) const
+        {
+            return index >= 0 && index < (int) rows.size() ? rows[(size_t) index]->data.deviceId
+                                                           : juce::String();
+        }
+
+        bool rowIsMaster (int index) const
+        {
+            return index >= 0 && index < (int) rows.size() && rows[(size_t) index]->data.master;
+        }
+
+        bool rowIsRateAuto (int index) const
+        {
+            return index < 0 || index >= (int) rows.size()
+                       || rows[(size_t) index]->autoMode.getSelectedId() != 2;
+        }
+
+        void setRowRateAuto (int index, bool autoRate)
+        {
+            if (index < 0 || index >= (int) rows.size()) return;
+            auto& box = rows[(size_t) index]->autoMode;
+            box.setSelectedId (autoRate ? 1 : 2, juce::dontSendNotification);
+        }
+
+        double getRowRate (int index) const
+        {
+            return index >= 0 && index < (int) rows.size()
+                       ? (double) juce::jmax (1, rows[(size_t) index]->rate.getSelectedId())
+                       : 0.0;
+        }
+
+        int getRowBuffer (int index) const
+        {
+            return index >= 0 && index < (int) rows.size() ? readRowBuffer (*rows[(size_t) index]) : 0;
+        }
+
+        bool advancedFieldsVisible() const { return selectedModeIsAdvanced(); }
+
+        EngineUiSettings getEngine() const
+        {
+            const auto mode = selectedMode();
+            auto s = EngineUiSettings::preset (mode);
+            if (mode == "advanced")
+            {
+                s.ringTargetMinMs = readInt (advRingMinEditor, s.ringTargetMinMs);
+                s.ringTargetMaxMs = readInt (advRingMaxEditor, s.ringTargetMaxMs);
+                s.driverTargetMs = readInt (advDriverMinEditor, s.driverTargetMs);
+                s.driverTargetMaxMs = readInt (advDriverMaxEditor, s.driverTargetMaxMs);
+                s.writeChunkMs = readInt (advChunkEditor, s.writeChunkMs);
+                s.servoIntervalMs = readInt (advServoEditor, s.servoIntervalMs);
+            }
+            return s.clampedToUiRanges();
+        }
+
+        void setEngine (const EngineUiSettings& settings)
+        {
+            const auto mode = EngineUiSettings::sanitiseMode (settings.mode);
+            engineMode.setSelectedId (EngineUiSettings::indexForMode (mode) + 1,
+                                      juce::dontSendNotification);
+            setAdvancedFields (mode == "advanced" ? settings : EngineUiSettings::preset (mode));
+            updateVisibility();
+        }
+
+        Snapshot getSnapshot() const
+        {
+            Snapshot snapshot;
+            snapshot.engine = getEngine();
+            for (const auto& row : rows)
+            {
+                auto data = row->data;
+                data.sampleRate = (double) juce::jmax (1, row->rate.getSelectedId());
+                data.bufferSize = readRowBuffer (*row);
+                data.rateAuto = row->autoMode.getSelectedId() != 2;
+                snapshot.devices.push_back (data);
+            }
+            return snapshot;
+        }
+
+        void setSnapshot (const Snapshot& snapshot)
+        {
+            rows.clear(); // Row destructors remove their controls from rowsContent
+            for (const auto& data : snapshot.devices)
+                createRow (data);
+            setEngine (snapshot.engine);
+            refreshLocalisedTexts();
+            updateVisibility();
+            notifyLayoutChanged();
+        }
+
+        // Actual opened rate/buffer from the router METERS devices[] telemetry.
+        // Only the "actual" label changes here: never the pending selection.
+        void setActuals (const std::vector<RouterDeviceTelemetry>& devices)
+        {
+            for (auto& row : rows)
+            {
+                bool found = false;
+                for (const auto& telemetry : devices)
+                {
+                    if (telemetry.id != row->data.deviceId
+                        && (telemetry.driver.isEmpty() || telemetry.driver != row->data.driver))
+                        continue;
+                    found = true;
+                    row->data.hasActual = telemetry.rate > 0.0;
+                    row->data.actualRate = telemetry.rate;
+                    row->data.actualBuffer = telemetry.buffer;
+                    row->data.actualFallback = row->data.hasActual
+                                               && telemetry.requestedRate > 0.0
+                                               && std::abs (telemetry.requestedRate - telemetry.rate) > 0.5;
+                    break;
+                }
+                if (! found)
+                    row->data.hasActual = false;
+                setRowActual (*row, row->data);
+            }
+        }
+
+        void refreshLocalisedTexts()
+        {
+            for (auto& row : rows)
+            {
+                updateRowName (*row);
+                fillAutoItems (row->autoMode, row->autoMode.getSelectedId() != 2);
+                setRowActual (*row, row->data);
+            }
+            refreshEngineItems();
+            repaint();
+        }
+
+        int getPreferredHeight() const
+        {
+            int h = 4 + 30 + 2 + 16;   // padding + title row + gap + header
+            h += visibleRowCount() * rowHeight;
+            if (advancedFieldsVisible())
+                h += 2 + advancedHeight;
+            h += 4;
+            return juce::jlimit (56, 220, h);
+        }
+
+        void paint (juce::Graphics& g) override
+        {
+            auto bounds = getLocalBounds().toFloat().reduced (0.5f);
+            g.setColour (Palette::panel);
+            g.fillRoundedRectangle (bounds, 4.0f);
+            g.setColour (Palette::outline.withAlpha (0.85f));
+            g.drawRoundedRectangle (bounds, 4.0f, 1.0f);
+
+            if (headerArea.getHeight() <= 0)
+                return;
+
+            const auto line = juce::Rectangle<int> (rowsViewport.getX(), headerArea.getY(),
+                                                    juce::jmax (0, rowsViewport.getMaximumVisibleWidth()),
+                                                    headerArea.getHeight());
+            const auto cells = computeCells (line);
+            g.setColour (Palette::muted);
+            g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+            g.drawText (L10n::tr ("Dispositivo"), cells.name, juce::Justification::centredLeft, false);
+            g.drawText (L10n::tr ("Sample rate"), cells.rate, juce::Justification::centredLeft, false);
+            g.drawText (L10n::tr ("Rate"), cells.autoMode, juce::Justification::centredLeft, false);
+            g.drawText (L10n::tr ("Buffer"), cells.buffer, juce::Justification::centredLeft, false);
+            g.drawText (L10n::tr ("Attivo"), cells.actual, juce::Justification::centredLeft, false);
+        }
+
+        void resized() override
+        {
+            auto area = getLocalBounds().reduced (8, 4);
+            auto titleRow = area.removeFromTop (30);
+            apply.setBounds (titleRow.removeFromRight (juce::jlimit (120, 200, titleRow.getWidth() / 4)));
+            titleRow.removeFromRight (8);
+            engineMode.setBounds (titleRow.removeFromRight (juce::jlimit (110, 160, titleRow.getWidth() / 3)));
+            titleRow.removeFromRight (6);
+            engineLabel.setBounds (titleRow.removeFromRight (juce::jlimit (90, 140, titleRow.getWidth() / 4)));
+            titleRow.removeFromRight (8);
+            title.setBounds (titleRow);
+
+            area.removeFromTop (2);
+            headerArea = area.removeFromTop (16);
+            rowsViewport.setBounds (area.removeFromTop (visibleRowCount() * rowHeight));
+            const int contentWidth = juce::jmax (200, rowsViewport.getMaximumVisibleWidth());
+            rowsContent.setSize (contentWidth, (int) rows.size() * rowHeight);
+            for (int i = 0; i < (int) rows.size(); ++i)
+            {
+                auto line = juce::Rectangle<int> (0, i * rowHeight, contentWidth, rowHeight);
+                const auto cells = computeCells (line.reduced (0, 1));
+                auto& row = *rows[(size_t) i];
+                row.name.setBounds (cells.name);
+                row.rate.setBounds (cells.rate);
+                row.autoMode.setBounds (cells.autoMode);
+                row.buffer.setBounds (cells.buffer);
+                row.actual.setBounds (cells.actual);
+            }
+
+            const bool advanced = advancedFieldsVisible();
+            if (advanced)
+            {
+                area.removeFromTop (2);
+                layoutAdvancedFields (area.removeFromTop (advancedHeight));
+            }
+        }
+
+    private:
+        static constexpr int rowHeight = 28;
+        static constexpr int advancedHeight = 26;
+
+        struct Row
+        {
+            DeviceRowData data;
+            juce::Label name, actual;
+            juce::ComboBox rate, autoMode, buffer;
+        };
+
+        struct Cells
+        {
+            juce::Rectangle<int> name, rate, autoMode, buffer, actual;
+        };
+
+        static Cells computeCells (juce::Rectangle<int> line)
+        {
+            Cells cells;
+            const int fixedWidth = 6 + 92 + 6 + 104 + 6 + 84 + 6; // gaps + combos
+            cells.name = line.removeFromLeft (juce::jmax (120, line.getWidth() - fixedWidth - 90));
+            line.removeFromLeft (6);
+            cells.rate = line.removeFromLeft (92);
+            line.removeFromLeft (6);
+            cells.autoMode = line.removeFromLeft (104);
+            line.removeFromLeft (6);
+            cells.buffer = line.removeFromLeft (84);
+            line.removeFromLeft (6);
+            cells.actual = line;
+            return cells;
+        }
+
+        static std::vector<double> standardRates()
+        {
+            return { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
+        }
+
+        static std::vector<int> standardBuffers()
+        {
+            return { 32, 64, 128, 256, 512, 1024, 2048 };
+        }
+
+        int visibleRowCount() const
+        {
+            return juce::jlimit (1, 3, (int) rows.size());
+        }
+
+        void fillRateItems (juce::ComboBox& box, double current) const
+        {
+            auto rates = standardRates();
+            bool found = false;
+            for (auto rate : rates)
+                if (std::abs (rate - current) < 0.5) found = true;
+            if (! found && current > 0.0)
+                rates.push_back (current);
+            std::sort (rates.begin(), rates.end());
+            box.clear (juce::dontSendNotification);
+            for (auto rate : rates)
+                box.addItem (juce::String (rate, 0), juce::jmax (1, (int) rate));
+            box.setSelectedId (juce::jmax (1, (int) (current > 0.0 ? current : 48000.0)),
+                               juce::dontSendNotification);
+            box.setTooltip (L10n::tr ("Sample rate richiesto per questo dispositivo (Hz).",
+                                      "Requested sample rate for this device (Hz)."));
+        }
+
+        void fillMasterBufferItems (juce::ComboBox& box, int current) const
+        {
+            auto buffers = standardBuffers();
+            if (current > 0 && std::find (buffers.begin(), buffers.end(), current) == buffers.end())
+                buffers.push_back (current);
+            std::sort (buffers.begin(), buffers.end());
+            box.clear (juce::dontSendNotification);
+            for (auto buffer : buffers)
+                box.addItem (juce::String (buffer), juce::jmax (1, buffer));
+            box.setSelectedId (current > 0 ? current : buffers.front(), juce::dontSendNotification);
+            box.setTooltip (L10n::tr ("Buffer ASIO del master in campioni.",
+                                      "Master ASIO buffer size in samples."));
+        }
+
+        void fillExtraBufferItems (juce::ComboBox& box, int current) const
+        {
+            auto buffers = standardBuffers();
+            if (current > 0 && std::find (buffers.begin(), buffers.end(), current) == buffers.end())
+                buffers.push_back (current);
+            std::sort (buffers.begin(), buffers.end());
+            box.clear (juce::dontSendNotification);
+            box.addItem (L10n::tr ("Auto", "Auto"), 1);
+            for (auto buffer : buffers)
+                box.addItem (juce::String (buffer), juce::jmax (2, buffer + 1));
+            box.setSelectedId (current > 0 ? current + 1 : 1, juce::dontSendNotification);
+            box.setTooltip (L10n::tr ("Buffer del dispositivo aggiuntivo in campioni "
+                                      "(Auto = quanto negoziato dal driver).",
+                                      "Extra device buffer size in samples "
+                                      "(Auto = whatever the driver negotiates)."));
+        }
+
+        void fillAutoItems (juce::ComboBox& box, bool rateAuto) const
+        {
+            box.clear (juce::dontSendNotification);
+            box.addItem (L10n::tr ("Auto (driver)"), 1);
+            box.addItem (L10n::tr ("Manuale (fisso)"), 2);
+            box.setSelectedId (rateAuto ? 1 : 2, juce::dontSendNotification);
+            box.setTooltip (L10n::tr ("Auto: accetta il sample rate negoziato dal driver (fallback "
+                                      "documentato). Manuale: il rate richiesto è obbligatorio e il "
+                                      "router non ripiega.",
+                                      "Auto: accept the driver-negotiated sample rate (documented "
+                                      "fallback). Manual: the requested rate is mandatory and the "
+                                      "router must not fall back."));
+        }
+
+        void configureAdvancedField (juce::Label& label, juce::TextEditor& editor,
+                                     const char* text, const char* tooltipIt, const char* tooltipEn,
+                                     int value)
+        {
+            L10n::bindLabelText (label, text);
+            label.setFont (juce::FontOptions (11.5f));
+            label.setColour (juce::Label::textColourId, Palette::text.withAlpha (0.8f));
+            addAndMakeVisible (label);
+            editor.setInputRestrictions (4, "0123456789");
+            editor.setJustification (juce::Justification::centred);
+            editor.setText (juce::String (value), juce::dontSendNotification);
+            editor.setTooltip (L10n::tr (tooltipIt, tooltipEn));
+            addAndMakeVisible (editor);
+        }
+
+        static int readInt (const juce::TextEditor& editor, int fallback)
+        {
+            const auto text = editor.getText().trim();
+            return text.isEmpty() ? fallback : text.getIntValue();
+        }
+
+        juce::String selectedMode() const
+        {
+            const int index = engineMode.getSelectedId() - 1;
+            if (index < 0 || index >= EngineUiSettings::numModes)
+                return "balanced";
+            return EngineUiSettings::modeForIndex (index);
+        }
+
+        bool selectedModeIsAdvanced() const { return selectedMode() == "advanced"; }
+
+        void refreshEngineItems()
+        {
+            const auto mode = selectedMode();
+            engineMode.clear (juce::dontSendNotification);
+            for (int i = 0; i < EngineUiSettings::numModes; ++i)
+                engineMode.addItem (L10n::tr (EngineUiSettings::labelForMode (
+                                        EngineUiSettings::modeForIndex (i))),
+                                    i + 1);
+            engineMode.setSelectedId (EngineUiSettings::indexForMode (mode) + 1,
+                                      juce::dontSendNotification);
+        }
+
+        void setAdvancedFields (const EngineUiSettings& settings)
+        {
+            advRingMinEditor.setText (juce::String (settings.ringTargetMinMs), juce::dontSendNotification);
+            advRingMaxEditor.setText (juce::String (settings.ringTargetMaxMs), juce::dontSendNotification);
+            advDriverMinEditor.setText (juce::String (settings.driverTargetMs), juce::dontSendNotification);
+            advDriverMaxEditor.setText (juce::String (settings.driverTargetMaxMs), juce::dontSendNotification);
+            advChunkEditor.setText (juce::String (settings.writeChunkMs), juce::dontSendNotification);
+            advServoEditor.setText (juce::String (settings.servoIntervalMs), juce::dontSendNotification);
+        }
+
+        void updateVisibility()
+        {
+            const bool advanced = selectedModeIsAdvanced();
+            for (juce::Component* component : { (juce::Component*) &advRingMinLabel,
+                                                (juce::Component*) &advRingMinEditor,
+                                                (juce::Component*) &advRingMaxLabel,
+                                                (juce::Component*) &advRingMaxEditor,
+                                                (juce::Component*) &advDriverMinLabel,
+                                                (juce::Component*) &advDriverMinEditor,
+                                                (juce::Component*) &advDriverMaxLabel,
+                                                (juce::Component*) &advDriverMaxEditor,
+                                                (juce::Component*) &advChunkLabel,
+                                                (juce::Component*) &advChunkEditor,
+                                                (juce::Component*) &advServoLabel,
+                                                (juce::Component*) &advServoEditor })
+                component->setVisible (advanced);
+            resized();
+            repaint();
+        }
+
+        void layoutAdvancedFields (juce::Rectangle<int> area)
+        {
+            juce::Label* labels[] = { &advRingMinLabel, &advRingMaxLabel, &advDriverMinLabel,
+                                      &advDriverMaxLabel, &advChunkLabel, &advServoLabel };
+            juce::TextEditor* editors[] = { &advRingMinEditor, &advRingMaxEditor, &advDriverMinEditor,
+                                            &advDriverMaxEditor, &advChunkEditor, &advServoEditor };
+            const int gap = 10;
+            const int pairWidth = juce::jmax (70, (area.getWidth() - gap * 5) / 6);
+            for (int i = 0; i < 6; ++i)
+            {
+                auto cell = area.removeFromLeft (pairWidth);
+                if (i < 5) area.removeFromLeft (gap);
+                labels[i]->setBounds (cell.removeFromLeft (juce::jmax (48, cell.getWidth() * 55 / 100)));
+                editors[i]->setBounds (cell);
+            }
+        }
+
+        int readRowBuffer (const Row& row) const
+        {
+            const int id = row.buffer.getSelectedId();
+            if (row.data.master)
+                return id > 0 ? id : row.data.bufferSize;
+            return id > 1 ? id - 1 : 0;
+        }
+
+        void updateRowName (Row& row) const
+        {
+            auto text = row.data.driver.isEmpty() ? juce::String ("ASIO") : row.data.driver;
+            if (row.data.master)
+                text += L10n::utf8 ("  —  ") + L10n::tr ("Motore principale", "Main engine");
+            else if (row.data.usedBy.isNotEmpty())
+                text += L10n::utf8 ("  —  ") + L10n::tr ("usato da: ", "used by: ") + row.data.usedBy;
+            else
+                text += L10n::utf8 ("  —  ") + L10n::tr ("non usato", "unused");
+            row.name.setText (text, juce::dontSendNotification);
+            row.name.setTooltip (text);
+        }
+
+        void setRowActual (Row& row, const DeviceRowData& data)
+        {
+            if (! data.hasActual || data.actualRate <= 0.0)
+            {
+                row.actual.setText ("-", juce::dontSendNotification);
+                row.actual.setColour (juce::Label::textColourId, Palette::muted);
+                return;
+            }
+            auto text = juce::String (data.actualRate, 0) + " Hz / " + juce::String (data.actualBuffer);
+            if (data.actualFallback)
+                text << "  " << L10n::tr ("(arrotondato dal driver)", "(rounded by the driver)");
+            row.actual.setText (text, juce::dontSendNotification);
+            row.actual.setColour (juce::Label::textColourId,
+                                  data.actualFallback ? Palette::warning : Palette::muted);
+        }
+
+        void createRow (const DeviceRowData& data)
+        {
+            auto row = std::make_unique<Row>();
+            row->data = data;
+            row->name.setFont (juce::FontOptions (12.5f));
+            row->name.setColour (juce::Label::textColourId, Palette::text);
+            row->actual.setFont (juce::FontOptions (11.5f));
+            row->actual.setColour (juce::Label::textColourId, Palette::muted);
+            rowsContent.addAndMakeVisible (row->name);
+            rowsContent.addAndMakeVisible (row->rate);
+            rowsContent.addAndMakeVisible (row->autoMode);
+            rowsContent.addAndMakeVisible (row->buffer);
+            rowsContent.addAndMakeVisible (row->actual);
+            fillRateItems (row->rate, data.sampleRate);
+            fillAutoItems (row->autoMode, data.rateAuto);
+            if (data.master)
+                fillMasterBufferItems (row->buffer, data.bufferSize);
+            else
+                fillExtraBufferItems (row->buffer, data.bufferSize);
+            rows.push_back (std::move (row));
+        }
+
+        void notifyLayoutChanged()
+        {
+            if (onLayoutChanged != nullptr && getParentComponent() != nullptr)
+                onLayoutChanged();
+        }
+
+        juce::Label title, engineLabel;
+        juce::ComboBox engineMode;
+        juce::TextButton apply;
+        juce::Component rowsContent;
+        std::vector<std::unique_ptr<Row>> rows;
+        juce::Viewport rowsViewport;
+        juce::Rectangle<int> headerArea;
+        juce::Label advRingMinLabel, advRingMaxLabel, advDriverMinLabel, advDriverMaxLabel,
+                     advChunkLabel, advServoLabel;
+        juce::TextEditor advRingMinEditor, advRingMaxEditor, advDriverMinEditor, advDriverMaxEditor,
+                         advChunkEditor, advServoEditor;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioFormatBar)
+    };
 
     class MainComponent final : public juce::Component, private juce::Timer
     {
@@ -2754,6 +3373,13 @@ namespace
             addAndMakeVisible (statusLabel);
             statusLabel.setColour (juce::Label::textColourId, Palette::success);
             statusLabel.setText ("Ready", juce::dontSendNotification);
+
+            // C16: the audio format bar is part of the main window surface:
+            // master + every extra ASIO device rate/buffer with Auto/Manual and
+            // the Engine v2 buffer mode are reachable without Preferences.
+            addAndMakeVisible (audioBar);
+            audioBar.onApply = [this] { applyAudioBarSettings(); };
+            audioBar.onLayoutChanged = [this] { resized(); };
 
             startStop.setButtonText ("Start");
             applyButton.setButtonText ("Apply live");
@@ -3121,6 +3747,7 @@ namespace
 
             loadPreferences();
             refreshDevices();
+            refreshAudioBar();
             refreshAll();
             registerLocalisedTexts();
             updateDisclosureStates();
@@ -3660,6 +4287,7 @@ namespace
             const auto selftestEngineSettings = engineSettings;
             const double selftestPreferredRate = preferredSampleRate;
             const int selftestPreferredBuffer = preferredBuffer;
+            const bool selftestPreferredRateAuto = preferredRateAuto;
             const auto selftestDeviceFormats = deviceFormats;
             juce::StringArray results;
             auto check = [&results] (bool condition, const juce::String& label)
@@ -3939,6 +4567,134 @@ namespace
                 check (prefsFormat, "device formats persisted in preferences.json");
             }
 
+            // C16: the main-window audio bar exposes the master format with an
+            // explicit Auto/Manual rate switch, one row per extra ASIO device and
+            // the engine buffer mode with its Advanced fields.  The checks below
+            // also prove devices[].rateAuto round-trips through profile and
+            // preferences (GUI -> config JSON -> router input).
+            {
+                const auto c16Drivers = asioDrivers;
+                const auto c16AsioText = asioBox.getText();
+                const auto c16Formats = deviceFormats;
+                const bool c16RateAuto = preferredRateAuto;
+                const auto c16Engine = engineSettings;
+
+                // One synthetic extra so the row count/JSON checks never depend
+                // on which ASIO drivers this machine happens to have installed.
+                if (asioDrivers.isEmpty())
+                    asioDrivers.add ("NL SelfTest Master ASIO");
+                if (asioBox.getText().isEmpty())
+                    asioBox.setText (asioDrivers[0], juce::dontSendNotification);
+                const auto c16ExtraDriver = juce::String ("NL SelfTest Extra ASIO");
+                if (! asioDrivers.contains (c16ExtraDriver))
+                    asioDrivers.add (c16ExtraDriver);
+                DeviceFormatChoice c16Extra;
+                c16Extra.deviceId = "asio:" + c16ExtraDriver;
+                c16Extra.driver = c16ExtraDriver;
+                c16Extra.sampleRate = 88200.0;
+                c16Extra.bufferSize = 128;
+                c16Extra.rateAuto = false;
+                deviceFormats[c16Extra.deviceId] = c16Extra;
+                preferredRateAuto = false;
+                engineSettings = EngineUiSettings::preset ("advanced");
+                refreshAudioBar();
+
+                int extraRow = -1;
+                for (int i = 0; i < audioBar.getRowCount(); ++i)
+                    if (audioBar.getRowDeviceId (i) == c16Extra.deviceId)
+                        extraRow = i;
+                check (audioBar.getRowCount() == (int) asioDrivers.size()
+                           && audioBar.rowIsMaster (0) && extraRow > 0,
+                       "main audio bar: master + one row per extra ASIO device");
+                check (! audioBar.rowIsRateAuto (0) && extraRow > 0 && ! audioBar.rowIsRateAuto (extraRow),
+                       "main audio bar: explicit Auto/Manual switch per device");
+                check (extraRow > 0 && std::abs (audioBar.getRowRate (extraRow) - 88200.0) < 0.5
+                           && audioBar.getRowBuffer (extraRow) == 128,
+                       "main audio bar: extra ASIO rate/buffer exposed");
+                check (audioBar.advancedFieldsVisible()
+                           && audioBar.getEngine().mode == "advanced",
+                       "main audio bar: Advanced engine fields reachable");
+                audioBar.setEngine (EngineUiSettings::preset ("balanced"));
+                check (! audioBar.advancedFieldsVisible()
+                           && audioBar.getEngine() == EngineUiSettings::preset ("balanced"),
+                       "main audio bar: engine buffer mode selectable without Preferences");
+                engineSettings = c16Engine;
+                refreshAudioBar();
+
+                juce::String c16Error;
+                const bool c16Wrote = writeProfile (profileTempFile(), c16Error);
+                bool masterAuto = false, extraAuto = false, extraFormat = false;
+                // NB: keep the parsed var alive (getDynamicObject returns a raw
+                // pointer into it).
+                const auto c16Parsed = juce::JSON::parse (profileTempFile());
+                if (auto* root = c16Parsed.getDynamicObject())
+                {
+                    const auto master = root->getProperty ("asio").toString();
+                    if (auto* devices = root->getProperty ("devices").getArray())
+                        for (const auto& item : *devices)
+                        {
+                            auto* o = item.getDynamicObject();
+                            if (o == nullptr) continue;
+                            const bool hasAuto = o->hasProperty ("rateAuto");
+                            const bool autoValue = (bool) o->getProperty ("rateAuto");
+                            const auto id = o->getProperty ("id").toString();
+                            if (o->getProperty ("driver").toString() == master)
+                                masterAuto = hasAuto && ! autoValue;
+                            if (id == c16Extra.deviceId)
+                            {
+                                extraAuto = hasAuto && ! autoValue;
+                                extraFormat = std::abs ((double) o->getProperty ("sampleRate") - 88200.0) < 0.5
+                                              && (int) o->getProperty ("buffer") == 128
+                                              && ! (bool) o->getProperty ("clockMaster");
+                            }
+                        }
+                }
+                readProfile (profileTempFile(), c16Error);
+                const auto c16LoadedIt = deviceFormats.find (c16Extra.deviceId);
+                const bool c16Loaded = c16LoadedIt != deviceFormats.end()
+                                       && ! c16LoadedIt->second.rateAuto
+                                       && std::abs (c16LoadedIt->second.sampleRate - 88200.0) < 0.5
+                                       && c16LoadedIt->second.bufferSize == 128;
+                check (c16Wrote && masterAuto, "master rateAuto written to devices[]");
+                check (extraAuto && extraFormat && c16Loaded,
+                       "extra ASIO rateAuto/format round-trip");
+                check (! preferredRateAuto, "master Auto/Manual restored by the profile");
+
+                // preferences.json: same Auto/Manual state, without losing it on
+                // reload (the operator's real file is restored afterwards).
+                const auto c16PrefsFile = preferencesFile();
+                const bool c16HadPrefs = c16PrefsFile.existsAsFile();
+                const auto c16PrefsBackup = c16HadPrefs ? c16PrefsFile.loadFileAsString() : juce::String();
+                savePreferences();
+                bool prefsMasterAuto = false, prefsExtraAuto = false;
+                const auto c16PrefsVar = juce::JSON::parse (c16PrefsFile);
+                if (auto* root = c16PrefsVar.getDynamicObject())
+                {
+                    prefsMasterAuto = root->hasProperty ("rateAuto")
+                                      && ! (bool) root->getProperty ("rateAuto");
+                    if (auto* formats = root->getProperty ("deviceFormats").getDynamicObject())
+                        if (auto* object = formats->getProperty (
+                                    juce::Identifier (c16ExtraDriver)).getDynamicObject())
+                            prefsExtraAuto = object->hasProperty ("rateAuto")
+                                             && ! (bool) object->getProperty ("rateAuto");
+                }
+                preferredRateAuto = true;
+                loadPreferences();
+                check (prefsMasterAuto && prefsExtraAuto && ! preferredRateAuto,
+                       "rateAuto persisted in preferences.json");
+                if (c16HadPrefs)
+                    c16PrefsFile.replaceWithText (c16PrefsBackup);
+                else
+                    c16PrefsFile.deleteFile();
+
+                asioDrivers = c16Drivers;
+                asioBox.setText (c16AsioText, juce::dontSendNotification);
+                deviceFormats = c16Formats;
+                preferredRateAuto = c16RateAuto;
+                engineSettings = c16Engine;
+                refreshAudioBar();
+            }
+
             // preferences.json must keep the same object between runs.
             const auto prefsFile = preferencesFile();
             const bool hadPreferences = prefsFile.existsAsFile();
@@ -4012,6 +4768,21 @@ namespace
                 check (EngineUiSettings::fromVar (loadEngineSectionFromDisk (lastSessionFile))
                            == expectedEngine,
                        "last-session profile engine settings persisted");
+                // C16: last_session_profile.json is written by writeProfile too,
+                // so devices[] must carry rateAuto exactly like the profile.
+                bool lastSessionHasDevice = false, lastSessionRateAuto = true;
+                const auto lastSessionVar = juce::JSON::parse (lastSessionFile);
+                if (auto* root = lastSessionVar.getDynamicObject())
+                    if (auto* devices = root->getProperty ("devices").getArray())
+                        for (const auto& item : *devices)
+                        {
+                            auto* o = item.getDynamicObject();
+                            if (o == nullptr) continue;
+                            lastSessionHasDevice = true;
+                            lastSessionRateAuto = lastSessionRateAuto && o->hasProperty ("rateAuto");
+                        }
+                check (! lastSessionHasDevice || lastSessionRateAuto,
+                       "last-session devices[] carry rateAuto");
                 engineSettings = savedEngineSettings;
             }
 
@@ -4124,7 +4895,7 @@ namespace
                     }
                 const double targetRate = std::abs (beforeRate - 44100.0) < 0.5 ? 48000.0 : 44100.0;
                 juce::String applyReport;
-                const bool applied = applyDeviceFormatChange (targetRate, 256, {}, {},
+                const bool applied = applyDeviceFormatChange (targetRate, 256, preferredRateAuto, {}, {},
                                                               engineSettings, {}, applyReport);
                 juce::Thread::sleep (1800);
                 bool targetSeen = false;
@@ -4138,6 +4909,14 @@ namespace
                         targetActualBuffer = d.buffer;
                         targetSeen = std::abs (d.rate - targetRate) < 0.5;
                     }
+                // C16: the router echoes devices[].rateAuto in its METERS
+                // devices[] block, so the Auto/Manual state we write reaches the
+                // engine (not only the GUI model).
+                bool masterRateAutoEcho = false;
+                for (const auto& d : routerDevices)
+                    if (d.clockMaster)
+                        masterRateAutoEcho = d.rateAuto == preferredRateAuto;
+                check (masterRateAutoEcho, "router config reads devices[].rateAuto");
                 const bool changeOk = readBefore && beforeRate > 0.0 && applied
                                       && isEngineRunning() && targetSeen;
                 check (changeOk, "real format change applies via graceful stop"
@@ -4154,7 +4933,7 @@ namespace
 
                 juce::String restoreReport;
                 const bool restoreCalled = applyDeviceFormatChange (beforeRate > 0.0 ? beforeRate : 48000.0,
-                                                                    256, {}, {}, engineSettings, {},
+                                                                    256, preferredRateAuto, {}, {}, engineSettings, {},
                                                                     restoreReport);
                 juce::Thread::sleep (1800);
                 bool restoredSeen = false;
@@ -4197,12 +4976,14 @@ namespace
                 engineSettings = selftestEngineSettings;
                 preferredSampleRate = selftestPreferredRate;
                 preferredBuffer = selftestPreferredBuffer;
+                preferredRateAuto = selftestPreferredRateAuto;
                 deviceFormats = selftestDeviceFormats;
                 savePreferences();
             }
             engineSettings = selftestEngineSettings;
             preferredSampleRate = selftestPreferredRate;
             preferredBuffer = selftestPreferredBuffer;
+            preferredRateAuto = selftestPreferredRateAuto;
             deviceFormats = selftestDeviceFormats;
 
             results.insert (0, "NL Audio Matrix GUI self-test");
@@ -4412,45 +5193,61 @@ namespace
         }
 
         //======================================================================
-        // G4: ASIO device formats (sample rate / buffer size).
+        // G4/C16: ASIO device formats (sample rate / buffer size / rate Auto).
+        juce::String masterDriverName() const
+        {
+            if (asioBox.getText().isNotEmpty())
+                return asioBox.getText();
+            return asioDrivers.isEmpty() ? juce::String() : asioDrivers[0];
+        }
+
         DeviceFormatChoice formatForDriver (const juce::String& driver) const
         {
             const auto key = "asio:" + driver;
+            DeviceFormatChoice choice;
             const auto it = deviceFormats.find (key);
             if (it != deviceFormats.end())
-                return it->second;
-            DeviceFormatChoice choice;
-            choice.deviceId = key;
-            choice.driver = driver;
-            choice.sampleRate = driver == asioBox.getText() ? preferredSampleRate : 48000.0;
-            choice.bufferSize = driver == asioBox.getText() ? preferredBuffer : 0;
+                choice = it->second;
+            else
+            {
+                choice.deviceId = key;
+                choice.driver = driver;
+            }
+            if (driver == masterDriverName())
+            {
+                // The master format always follows the main-window values.
+                choice.deviceId = key;
+                choice.driver = driver;
+                choice.sampleRate = preferredSampleRate;
+                choice.bufferSize = preferredBuffer;
+                choice.rateAuto = preferredRateAuto;
+            }
+            else if (choice.sampleRate <= 0.0)
+                choice.sampleRate = 48000.0;
             return choice;
         }
 
-        void setFormatForDriver (const juce::String& driver, double rate, int buffer)
+        void setFormatForDriver (const juce::String& driver, double rate, int buffer, bool rateAuto)
         {
             DeviceFormatChoice choice;
             choice.deviceId = "asio:" + driver;
             choice.driver = driver;
             choice.sampleRate = rate;
             choice.bufferSize = buffer;
+            choice.rateAuto = rateAuto;
             deviceFormats[choice.deviceId] = choice;
-            if (driver == asioBox.getText())
+            if (driver == masterDriverName())
             {
                 preferredSampleRate = rate;
                 preferredBuffer = buffer > 0 ? buffer : preferredBuffer;
+                preferredRateAuto = rateAuto;
             }
         }
 
-        // Formats shown in Preferences: the master device first, then every extra
-        // ASIO device referenced by a source or destination.
-        std::vector<DeviceFormatChoice> collectDeviceFormatsForPreferences() const
+        // Node names bound to each devices[] entry, used by both the Preferences
+        // extra-device rows and the main-window audio bar.
+        std::map<juce::String, juce::String> usedNodeNamesByDevice() const
         {
-            std::vector<DeviceFormatChoice> result;
-            auto master = formatForDriver (asioBox.getText());
-            master.role = L10n::tr ("Motore principale", "Main engine");
-            result.push_back (master);
-
             std::map<juce::String, juce::String> used;
             for (const auto& s : sources)
                 if (s.deviceId.startsWith ("asio:"))
@@ -4458,16 +5255,120 @@ namespace
             for (const auto& d : destinations)
                 if (d.deviceId.startsWith ("asio:"))
                     used[d.deviceId] += (used[d.deviceId].isEmpty() ? "" : ", ") + d.name;
+            return used;
+        }
+
+        // Formats shown in Preferences: the master device first, then every extra
+        // ASIO device referenced by a source or destination.
+        std::vector<DeviceFormatChoice> collectDeviceFormatsForPreferences() const
+        {
+            std::vector<DeviceFormatChoice> result;
+            const auto master = masterDriverName();
+            auto masterChoice = formatForDriver (master);
+            masterChoice.role = L10n::tr ("Motore principale", "Main engine");
+            result.push_back (masterChoice);
+
+            const auto used = usedNodeNamesByDevice();
             for (const auto& [deviceId, nodes] : used)
             {
                 auto driver = deviceId.fromFirstOccurrenceOf ("asio:", false, false);
-                if (driver == asioBox.getText())
+                if (driver == master)
                     continue;
                 auto choice = formatForDriver (driver);
                 choice.role = L10n::tr ("usato da: ", "used by: ") + nodes;
                 result.push_back (choice);
             }
             return result;
+        }
+
+        // C16: rebuild the main-window audio bar from the model.  The master row
+        // first, then one row for every extra ASIO driver written to devices[].
+        void refreshAudioBar()
+        {
+            AudioFormatBar::Snapshot snapshot;
+            snapshot.engine = engineSettings;
+
+            const auto master = masterDriverName();
+            const auto used = usedNodeNamesByDevice();
+            auto usedByFor = [&used] (const juce::String& deviceId)
+            {
+                const auto it = used.find (deviceId);
+                return it != used.end() ? it->second : juce::String();
+            };
+            auto masterChoice = formatForDriver (master);
+            AudioFormatBar::DeviceRowData masterRow;
+            masterRow.deviceId = master.isEmpty() ? juce::String() : "asio:" + master;
+            masterRow.driver = master;
+            masterRow.master = true;
+            masterRow.sampleRate = masterChoice.sampleRate;
+            masterRow.bufferSize = masterChoice.bufferSize;
+            masterRow.rateAuto = preferredRateAuto;
+            masterRow.usedBy = usedByFor (masterRow.deviceId);
+            snapshot.devices.push_back (masterRow);
+
+            for (const auto& driver : asioDrivers)
+            {
+                if (driver == master)
+                    continue;
+                auto choice = formatForDriver (driver);
+                AudioFormatBar::DeviceRowData row;
+                row.deviceId = "asio:" + driver;
+                row.driver = driver;
+                row.master = false;
+                row.sampleRate = choice.sampleRate > 0.0 ? choice.sampleRate : 48000.0;
+                row.bufferSize = choice.bufferSize;
+                row.rateAuto = choice.rateAuto;
+                row.usedBy = usedByFor (row.deviceId);
+                snapshot.devices.push_back (row);
+            }
+
+            audioBar.setSnapshot (snapshot);
+            audioBar.setActuals (routerDevices);
+        }
+
+        // C16: apply everything edited in the audio bar through the production
+        // path (validate -> graceful stop -> rewrite profile/preferences ->
+        // restart -> requested-vs-actual report).
+        void applyAudioBarSettings()
+        {
+            const auto snapshot = audioBar.getSnapshot();
+            double rate = preferredSampleRate;
+            int buffer = preferredBuffer;
+            bool rateAuto = preferredRateAuto;
+            std::vector<DeviceFormatChoice> extras;
+            for (const auto& row : snapshot.devices)
+            {
+                if (row.master)
+                {
+                    rate = row.sampleRate;
+                    buffer = row.bufferSize;
+                    rateAuto = row.rateAuto;
+                    continue;
+                }
+                DeviceFormatChoice choice;
+                choice.deviceId = row.deviceId;
+                choice.driver = row.driver;
+                choice.sampleRate = row.sampleRate;
+                choice.bufferSize = row.bufferSize;
+                choice.rateAuto = row.rateAuto;
+                extras.push_back (choice);
+            }
+
+            // Validate against the real driver capabilities when the ASIO device
+            // can be opened (router stopped); a running router skips the probe
+            // exactly like Preferences and the router verifies on open.
+            std::vector<double> availableRates;
+            std::vector<int> availableBuffers;
+            double probedRate = 0.0;
+            int probedBuffer = 0;
+            const bool probed = probeAsioFormat (masterDriverName(), availableRates,
+                                                 availableBuffers, probedRate, probedBuffer);
+            juce::ignoreUnused (probed, probedRate, probedBuffer);
+
+            juce::String report;
+            applyDeviceFormatChange (rate, buffer, rateAuto, availableRates, availableBuffers,
+                                     snapshot.engine, std::move (extras), report);
+            refreshAudioBar();
         }
 
         // Query the real capabilities of one ASIO driver.  Only safe while the
@@ -4635,7 +5536,11 @@ namespace
         void resized() override
         {
             auto area = getLocalBounds().reduced (10);
-            auto top = area.removeFromTop (92);
+            // C16: the audio format bar sits directly under the status line so
+            // the master/extra ASIO formats and the engine buffer mode are on
+            // the main window surface, not only in Preferences.
+            const int barHeight = audioBar.getPreferredHeight();
+            auto top = area.removeFromTop (76 + barHeight);
             auto topRow = top.removeFromTop (36);
             const bool compact = area.getWidth() < 1200;
             profileName.setBounds (topRow.removeFromLeft (compact ? 128 : 220));
@@ -4660,6 +5565,8 @@ namespace
             leftPanelArrow.setBounds (topRow.removeFromLeft (compact ? 26 : 28));
             top.removeFromTop (4);
             statusLabel.setBounds (top.removeFromTop (32));
+            top.removeFromTop (4);
+            audioBar.setBounds (top.removeFromTop (barHeight));
 
             if (mixerVisible)
             {
@@ -4946,6 +5853,9 @@ namespace
                 const int buffer = (int) o->getProperty ("buffer");
                 if (rate > 0.0) preferredSampleRate = rate;
                 if (buffer > 0) preferredBuffer = buffer;
+                // C16: Auto/Manual sample rate of the master ASIO device.
+                if (o->hasProperty ("rateAuto"))
+                    preferredRateAuto = (bool) o->getProperty ("rateAuto");
                 if (auto* formats = o->getProperty ("deviceFormats").getDynamicObject())
                 {
                     for (const auto& property : formats->getProperties())
@@ -4958,6 +5868,10 @@ namespace
                         choice.deviceId = "asio:" + choice.driver;
                         choice.sampleRate = (double) object->getProperty ("sampleRate");
                         choice.bufferSize = (int) object->getProperty ("buffer");
+                        // Older preferences.json files have no per-device rateAuto:
+                        // the router default (Auto) is the compatible choice.
+                        choice.rateAuto = object->hasProperty ("rateAuto")
+                                              ? (bool) object->getProperty ("rateAuto") : true;
                         if (choice.sampleRate > 0.0)
                             deviceFormats[choice.deviceId] = choice;
                     }
@@ -4983,6 +5897,7 @@ namespace
             auto* o = rootVar.getDynamicObject();
             o->setProperty ("sampleRate", preferredSampleRate);
             o->setProperty ("buffer", preferredBuffer);
+            o->setProperty ("rateAuto", preferredRateAuto);
             o->setProperty ("engine", engineSettings.toVar());
             o->setProperty ("language", L10n::languageCode());
             {
@@ -4996,6 +5911,7 @@ namespace
                     auto* object = new juce::DynamicObject();
                     object->setProperty ("sampleRate", choice.sampleRate);
                     object->setProperty ("buffer", choice.bufferSize);
+                    object->setProperty ("rateAuto", choice.rateAuto);
                     formats->setProperty (juce::Identifier (choice.driver), juce::var (object));
                 }
                 o->setProperty ("deviceFormats", juce::var (formats));
@@ -5123,7 +6039,7 @@ namespace
         // Preferences dialog and by the self-test (so the test exercises exactly
         // the code the user runs): validate -> graceful stop via --control ->
         // rewrite profile/preferences -> restart -> status with requested-vs-actual.
-        bool applyDeviceFormatChange (double rate, int buffer,
+        bool applyDeviceFormatChange (double rate, int buffer, bool rateAuto,
                                       const std::vector<double>& availableRates,
                                       const std::vector<int>& availableBuffers,
                                       EngineUiSettings engine,
@@ -5165,7 +6081,7 @@ namespace
             // the new format.  No hard kill, no click at the change.
             if (wasRunning)
                 stopRouter();
-            setFormatForDriver (asioBox.getText(), rate, buffer);
+            setFormatForDriver (masterDriverName(), rate, buffer, rateAuto);
             for (auto& choice : extraFormats)
             {
                 choice.deviceId = choice.deviceId.isNotEmpty() ? choice.deviceId
@@ -5174,6 +6090,7 @@ namespace
             }
             preferredSampleRate = rate;
             if (buffer > 0) preferredBuffer = buffer;
+            preferredRateAuto = rateAuto;
             if (engine.mode.isNotEmpty()) engineSettings = engine;
             savePreferences();
             juce::String err;
@@ -5181,8 +6098,11 @@ namespace
                 setStatus (err);
             if (wasRunning)
                 startRouter();
+            refreshAudioBar();
             resultText = L10n::tr ("Formato applicato: richiesto ", "Format applied: requested ")
-                         + juce::String (rate, 0) + " Hz / " + juce::String (buffer);
+                         + juce::String (rate, 0) + " Hz / " + juce::String (buffer)
+                         + " — " + (rateAuto ? L10n::tr ("rate Auto", "rate Auto")
+                                             : L10n::tr ("rate Manuale", "rate Manual"));
             if (lastFormatReport.isNotEmpty())
                 resultText << " — " << lastFormatReport;
             else if (wasRunning)
@@ -5221,7 +6141,7 @@ namespace
             std::vector<int> availableBuffers;
             double probedRate = 0.0;
             int probedBuffer = 0;
-            const bool probed = probeAsioFormat (asioBox.getText(), availableRates,
+            const bool probed = probeAsioFormat (masterDriverName(), availableRates,
                                                  availableBuffers, probedRate, probedBuffer);
             juce::ignoreUnused (probed, probedRate, probedBuffer);
             auto extras = collectDeviceFormatsForPreferences();
@@ -5229,17 +6149,18 @@ namespace
                 extras.erase (extras.begin()); // master device is edited by the main controls
             auto* content = new PreferencesComponent (preferredSampleRate, preferredBuffer,
                                                       engineSettings, availableRates,
-                                                      availableBuffers, extras);
+                                                      availableBuffers, extras,
+                                                      preferredRateAuto);
             auto* win = new PreferencesWindow (content);
             juce::Component::SafePointer<MainComponent> safe (this);
             content->onClose = [win] { win->closeButtonPressed(); };
             content->onApply = [safe, win, availableRates, availableBuffers]
-                (double rate, int buffer, EngineUiSettings engine,
+                (double rate, int buffer, bool rateAuto, EngineUiSettings engine,
                  std::vector<DeviceFormatChoice> extraFormats)
             {
                 if (safe == nullptr) return;
                 juce::String applyReport;
-                safe->applyDeviceFormatChange (rate, buffer, availableRates, availableBuffers,
+                safe->applyDeviceFormatChange (rate, buffer, rateAuto, availableRates, availableBuffers,
                                                engine, std::move (extraFormats), applyReport);
                 win->closeButtonPressed();
             };
@@ -6339,6 +7260,8 @@ namespace
                 sourceEndpoint.setSelectedId (1, juce::dontSendNotification);
                 destinationEndpoint.setSelectedId (1, juce::dontSendNotification);
             }
+            // C16: the extra-device rows follow the enumerated ASIO drivers.
+            refreshAudioBar();
         }
 
         //======================================================================
@@ -7124,11 +8047,13 @@ namespace
                                                      : (format.sampleRate > 0.0 ? format.sampleRate : 48000.0));
                 d->setProperty ("buffer", master ? preferredBuffer : format.bufferSize);
                 d->setProperty ("clockMaster", master);
+                // C16: devices[].rateAuto (router default is true).  Auto accepts
+                // the driver-negotiated rate with the documented fallback;
+                // Manual makes the requested rate mandatory.
+                d->setProperty ("rateAuto", master ? preferredRateAuto : format.rateAuto);
                 deviceArray.add (deviceObj);
             };
-            const auto masterDriver = asioBox.getText().isNotEmpty()
-                                          ? asioBox.getText()
-                                          : (asioDrivers.isEmpty() ? juce::String() : asioDrivers[0]);
+            const auto masterDriver = masterDriverName();
             if (masterDriver.isNotEmpty())
                 addDevice (masterDriver, true);
             for (const auto& driver : asioDrivers)
@@ -7300,6 +8225,10 @@ namespace
                     choice.driver = driver;
                     choice.sampleRate = rate > 0.0 ? rate : 48000.0;
                     choice.bufferSize = buffer;
+                    // C16: devices[].rateAuto (missing in older profiles -> Auto,
+                    // which is the router default and keeps them compatible).
+                    choice.rateAuto = o->hasProperty ("rateAuto")
+                                          ? (bool) o->getProperty ("rateAuto") : true;
                     deviceFormats[choice.deviceId] = choice;
                     devicesLoaded = true;
                     if ((bool) o->getProperty ("clockMaster")
@@ -7307,6 +8236,7 @@ namespace
                     {
                         if (choice.sampleRate > 0.0) preferredSampleRate = choice.sampleRate;
                         if (choice.bufferSize > 0) preferredBuffer = choice.bufferSize;
+                        preferredRateAuto = choice.rateAuto;
                     }
                 }
 
@@ -7440,6 +8370,9 @@ namespace
 
             if (devicesLoaded && sessionPersistenceEnabled)
                 savePreferences(); // keep preferences.json in sync with the profile
+            // C16: a loaded profile is authoritative for devices[] format/Auto
+            // and for the engine buffer, so the main-window bar must follow it.
+            refreshAudioBar();
             refreshAll();
             return true;
         }
@@ -7541,7 +8474,9 @@ namespace
             // G4: device formats are part of the router topology (E3): a rate or
             // buffer change must restart the engine, never apply silently.
             for (const auto& [deviceId, choice] : deviceFormats)
-                key << "|F:" << deviceId << ':' << choice.sampleRate << ':' << choice.bufferSize;
+                key << "|F:" << deviceId << ':' << choice.sampleRate << ':' << choice.bufferSize
+                    << ':' << (choice.rateAuto ? 'A' : 'M');
+            key << "|MA:" << (preferredRateAuto ? 'A' : 'M');
             for (const auto& b : buses)
                 key << "|B:" << b.id;
             // Engine v2 buffering is part of the router topology key: changing
@@ -7573,6 +8508,8 @@ namespace
             routerDevices.clear();
             deviceFormatMismatchReported = false;
             lastFormatReport.clear();
+            // C16: no stale "active" values once the router is stopped.
+            audioBar.setActuals ({});
         }
 
         void startRouter()
@@ -7983,6 +8920,8 @@ namespace
                         t.backend = device->getProperty ("backend").toString();
                         t.driver = device->getProperty ("driver").toString();
                         t.clockMaster = (bool) device->getProperty ("clockMaster");
+                        t.rateAuto = device->hasProperty ("rateAuto")
+                                         ? (bool) device->getProperty ("rateAuto") : true;
                         t.requestedRate = (double) device->getProperty ("requestedRate");
                         t.requestedBuffer = (int) device->getProperty ("requestedBuffer");
                         t.rate = (double) device->getProperty ("rate");
@@ -7992,6 +8931,9 @@ namespace
                         routerDevices.push_back (t);
                     }
                 lastFormatReport = buildFormatReport();
+                // C16: show the actual opened rate/buffer of each device row,
+                // never the requested value.
+                audioBar.setActuals (routerDevices);
                 if (! deviceFormatMismatchReported)
                 {
                     for (const auto& d : routerDevices)
@@ -8112,6 +9054,9 @@ namespace
         juce::StringArray recentRouterLines;
 
         NeonLookAndFeel lookAndFeel;
+        // C16: main-window audio format bar (master + extra ASIO rows, engine
+        // buffer mode).  Declared before the panels so it is constructed first.
+        AudioFormatBar audioBar;
         juce::Component leftContent;
         juce::Viewport leftViewport;
         // G2 collapsible panel state (persisted in preferences.json "ui").
@@ -8157,6 +9102,8 @@ namespace
         juce::int64 engineCallbacks = 0;
         double preferredSampleRate = 48000.0;
         int preferredBuffer = 256;
+        // devices[].rateAuto of the master ASIO device (true = Auto).
+        bool preferredRateAuto = true;
         EngineUiSettings engineSettings;
 
         // Engine v2 buffering/health telemetry from METERS (empty/false when

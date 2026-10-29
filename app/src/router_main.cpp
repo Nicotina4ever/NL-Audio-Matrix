@@ -1191,6 +1191,44 @@ namespace
         std::atomic<bool> driverConsumerActive { false };
     };
 
+    // Pick the closest driver-supported rate to the requested one.  Used only in
+    // Auto mode; Manual mode must never silently change the requested format.
+    static double pickNearestRate (const juce::Array<double>& rates, double wanted)
+    {
+        if (rates.isEmpty())
+            return wanted;
+        double best = rates[0];
+        for (auto r : rates)
+            if (std::abs (r - wanted) < std::abs (best - wanted) - 1.0e-9
+                || (std::abs (std::abs (r - wanted) - std::abs (best - wanted)) <= 1.0e-9 && r > best))
+                best = r;
+        return best;
+    }
+
+    // Pick a driver-supported buffer: the smallest one that is at least the
+    // requested size (latency safety), otherwise the largest available.
+    static int pickBufferSize (const juce::Array<int>& sizes, int wanted)
+    {
+        if (sizes.isEmpty())
+            return wanted;
+        int bestAbove = 0;
+        int largest = 0;
+        for (auto s : sizes)
+        {
+            if (s < largest || largest == 0) largest = s;
+            if (s >= wanted && (bestAbove == 0 || s < bestAbove)) bestAbove = s;
+        }
+        return bestAbove > 0 ? bestAbove : largest;
+    }
+
+    static juce::String describeFormats (const juce::Array<double>& rates, const juce::Array<int>& buffers)
+    {
+        juce::StringArray r, b;
+        for (auto v : rates) r.add (juce::String (v, 0));
+        for (auto v : buffers) b.add (juce::String (v));
+        return "rates=[" + r.joinIntoString (",") + "] buffers=[" + b.joinIntoString (",") + "]";
+    }
+
     // One additional full-duplex ASIO device.  Its callback only moves audio
     // between its hardware buffers and SPSC rings; the graph master owns the
     // matrix and clock.  This is the first same-process multi-ASIO path.
@@ -1198,8 +1236,13 @@ namespace
     {
     public:
         bool open (const juce::String& name, bool needInput, bool needOutput,
-                   double requestedRate, int requestedBuffer, juce::String& error)
+                   double requestedRate, int requestedBuffer, bool rateAuto,
+                   juce::String& error, bool& rateFallback, bool& bufferFallback,
+                   double& effectiveRate)
         {
+            rateFallback = false;
+            bufferFallback = false;
+            effectiveRate = -1.0;
             auto* type = juce::AudioIODeviceType::createAudioIODeviceType_ASIO();
             if (type == nullptr)
             {
@@ -1218,18 +1261,65 @@ namespace
             juce::BigInteger inMask, outMask;
             if (needInput) inMask.setRange (0, ins.size(), true);
             if (needOutput) outMask.setRange (0, outs.size(), true);
-            const int bufferToRequest = requestedBuffer > 0 ? requestedBuffer : 256;
-            auto err = device->open (inMask, outMask, requestedRate, bufferToRequest);
+
+            const auto availableRates = device->getAvailableSampleRates();
+            const auto availableBuffers = device->getAvailableBufferSizes();
+            availableRatesCache = availableRates;
+            availableBuffersCache = availableBuffers;
+            double rateToOpen = requestedRate > 0.0 ? requestedRate : 48000.0;
+            int bufferToRequest = requestedBuffer > 0 ? requestedBuffer : 256;
+            if (rateAuto)
+            {
+                if (! availableRates.isEmpty() && ! availableRates.contains (rateToOpen))
+                {
+                    rateToOpen = pickNearestRate (availableRates, rateToOpen);
+                    rateFallback = true;
+                }
+            }
+            else if (requestedRate > 0.0 && ! availableRates.isEmpty()
+                     && ! availableRates.contains (requestedRate))
+            {
+                // Manual mode: fail with the supported list instead of letting
+                // the driver open a different rate silently.
+                error = name + ": required rate " + juce::String (requestedRate, 0)
+                        + " Hz is not offered by the driver in Manual mode; "
+                        + describeFormats (availableRates, availableBuffers);
+                return false;
+            }
+            // Buffer size is always a request, never a strict contract: some
+            // drivers round it. Pick a supported value and report the effective
+            // one; only the sample rate is a hard/manual contract.
+            if (! availableBuffers.isEmpty() && ! availableBuffers.contains (bufferToRequest))
+            {
+                bufferToRequest = pickBufferSize (availableBuffers, bufferToRequest);
+                bufferFallback = true;
+            }
+
+            auto err = device->open (inMask, outMask, rateToOpen, bufferToRequest);
             if (err.isNotEmpty() && needInput && ! needOutput)
             {
                 outMask.setRange (0, outs.size(), true);
-                err = device->open (inMask, outMask, requestedRate, bufferToRequest);
+                err = device->open (inMask, outMask, rateToOpen, bufferToRequest);
             }
             if (err.isNotEmpty())
             {
-                error = name + ": " + err;
+                error = name + ": " + err + " (requested " + juce::String (rateToOpen, 0) + " Hz / "
+                        + juce::String (bufferToRequest) + "; " + describeFormats (availableRates, availableBuffers) + ")";
                 return false;
             }
+
+            // Manual mode is a contract: never claim a format we did not get.
+            const double actualRate = device->getCurrentSampleRate();
+            if (! rateAuto && requestedRate > 0.0 && std::abs (actualRate - requestedRate) > 0.5)
+            {
+                error = name + ": driver opened " + juce::String (actualRate, 0)
+                        + " Hz instead of the required " + juce::String (requestedRate, 0)
+                        + " Hz in Manual mode; " + describeFormats (availableRates, availableBuffers);
+                device->close();
+                return false;
+            }
+            effectiveRate = actualRate;
+
             const auto activeIn = device->getActiveInputChannels();
             const auto activeOut = device->getActiveOutputChannels();
             const int inputCount = juce::jmax (1, ins.size());
@@ -1293,6 +1383,8 @@ namespace
 
         double getRate() const { return rate; }
         int getBufferSize() const { return device != nullptr ? device->getCurrentBufferSizeSamples() : 0; }
+        const juce::Array<double>& getAvailableRates() const { return availableRatesCache; }
+        const juce::Array<int>& getAvailableBuffers() const { return availableBuffersCache; }
         int getOpenedInputs() const { return openedInputs; }
         int getOpenedOutputs() const { return openedOutputs; }
 
@@ -1403,6 +1495,8 @@ namespace
         double rate = 48000.0;
         int openedInputs = 0;
         int openedOutputs = 0;
+        juce::Array<double> availableRatesCache;
+        juce::Array<int> availableBuffersCache;
     };
     // Immutable routing table. The audio thread only reads a published
     // snapshot; the control thread builds a replacement and swaps the pointer.
@@ -2149,22 +2243,53 @@ namespace
         juce::BigInteger inMask;
         inMask.setRange (0, asioIns.size(), true);
 
+        struct AsioFormatInfo
+        {
+            bool rateAuto = true;
+            bool rateFallback = false;
+            bool bufferFallback = false;
+            double effectiveRate = -1.0;
+            int effectiveBuffer = -1;
+            juce::Array<double> availableRates;
+            juce::Array<int> availableBuffers;
+        };
+        std::map<juce::String, AsioFormatInfo> asioFormatInfo;
+
         double rateToOpen = requestedRate;
         int bufferToOpen = requestedBuffer > 0 ? requestedBuffer : 256;
         const bool masterRateAuto = mainDeviceDef == nullptr || mainDeviceDef->rateAuto;
+        bool masterRateFallback = false;
+        bool masterBufferFallback = false;
+        const auto masterAvailableRates = asioDevice->getAvailableSampleRates();
+        const auto masterAvailableBuffers = asioDevice->getAvailableBufferSizes();
         if (masterRateAuto)
         {
-            const auto availableRates = asioDevice->getAvailableSampleRates();
-            if (! availableRates.isEmpty() && ! availableRates.contains (requestedRate))
+            if (! masterAvailableRates.isEmpty() && ! masterAvailableRates.contains (requestedRate))
             {
-                rateToOpen = availableRates[0];
+                rateToOpen = pickNearestRate (masterAvailableRates, requestedRate);
+                masterRateFallback = rateToOpen != requestedRate;
                 std::cout << "Master sample rate Auto: requested " << requestedRate
-                          << " Hz is not available; falling back to " << rateToOpen
-                          << " Hz.\n";
+                          << " Hz is not available; using " << rateToOpen
+                          << " Hz (" << describeFormats (masterAvailableRates, {}) << ").\n";
             }
-            const auto availableBuffers = asioDevice->getAvailableBufferSizes();
-            if (! availableBuffers.isEmpty() && ! availableBuffers.contains (bufferToOpen))
-                bufferToOpen = availableBuffers[0];
+        }
+        else if (requestedRate > 0.0 && ! masterAvailableRates.isEmpty()
+                 && ! masterAvailableRates.contains (requestedRate))
+        {
+            std::cerr << "Master rate: required " << requestedRate
+                      << " Hz is not offered by the driver in Manual mode ("
+                      << describeFormats (masterAvailableRates, masterAvailableBuffers)
+                      << "); exit 24\n";
+            return 24;
+        }
+        // Buffer size is a request, not a strict contract: some drivers round it.
+        if (! masterAvailableBuffers.isEmpty() && ! masterAvailableBuffers.contains (bufferToOpen))
+        {
+            bufferToOpen = pickBufferSize (masterAvailableBuffers, bufferToOpen);
+            masterBufferFallback = true;
+            std::cout << "Master buffer: requested " << requestedBuffer
+                      << " samples is not available; using " << bufferToOpen
+                      << " samples (" << describeFormats ({}, masterAvailableBuffers) << ").\n";
         }
 
         auto asioError = asioDevice->open (inMask, outMask, rateToOpen, bufferToOpen);
@@ -2196,9 +2321,6 @@ namespace
                   << asioBufferActual << " (requested "
                   << requestedRate << " Hz / " << requestedBuffer
                   << (mainDeviceDef != nullptr ? " by device definition" : " default") << ")\n";
-        if (masterRateAuto && rateToOpen != requestedRate)
-            std::cout << "Master sample rate Auto: effective rate " << rateToOpen
-                      << " Hz (fallback from requested " << requestedRate << " Hz).\n";
         if (rateToOpen > 0.0 && std::abs (asioRate - rateToOpen) > 0.5)
         {
             std::cerr << "Device format not available: requested ASIO rate "
@@ -2210,6 +2332,17 @@ namespace
         if (requestedBuffer > 0 && asioBufferActual != requestedBuffer)
             std::cerr << "Warning: requested ASIO buffer " << requestedBuffer
                       << " but the driver opened " << asioBufferActual << " samples\n";
+        {
+            AsioFormatInfo info;
+            info.rateAuto = masterRateAuto;
+            info.rateFallback = masterRateFallback;
+            info.bufferFallback = masterBufferFallback;
+            info.effectiveRate = asioRate;
+            info.effectiveBuffer = asioBufferActual;
+            info.availableRates = masterAvailableRates;
+            info.availableBuffers = masterAvailableBuffers;
+            asioFormatInfo[mainDeviceDef != nullptr ? mainDeviceDef->id : config.asio] = info;
+        }
 
         const auto activeIn = asioDevice->getActiveInputChannels();
         const auto activeOut = asioDevice->getActiveOutputChannels();
@@ -2251,16 +2384,37 @@ namespace
                 continue;
             auto extra = std::make_unique<ExtraAsioDevice>();
             juce::String openError;
+            bool extraRateFallback = false, extraBufferFallback = false;
+            double extraEffectiveRate = -1.0;
             if (! extra->open (driver, needInputs, needOutputs, deviceDef.sampleRate,
-                               deviceDef.bufferSize, openError))
+                               deviceDef.bufferSize, deviceDef.rateAuto, openError,
+                               extraRateFallback, extraBufferFallback, extraEffectiveRate))
             {
                 std::cerr << "Extra ASIO device failed: " << driver
                           << " (needInputs=" << needInputs << ", needOutputs=" << needOutputs
                           << ", requestedRate=" << deviceDef.sampleRate
-                          << ", requestedBuffer=" << deviceDef.bufferSize << "): "
-                          << openError << "\n";
+                          << ", requestedBuffer=" << deviceDef.bufferSize
+                          << ", rateAuto=" << (deviceDef.rateAuto ? "true" : "false")
+                          << "): " << openError << "\n";
                 return 23;
             }
+            AsioFormatInfo info;
+            info.rateAuto = deviceDef.rateAuto;
+            info.rateFallback = extraRateFallback;
+            info.bufferFallback = extraBufferFallback;
+            info.effectiveRate = extraEffectiveRate;
+            info.effectiveBuffer = extra->getBufferSize();
+            info.availableRates = extra->getAvailableRates();
+            info.availableBuffers = extra->getAvailableBuffers();
+            asioFormatInfo[deviceDef.id] = info;
+            if (extraRateFallback)
+                std::cout << "Extra ASIO " << driver << " Auto: requested "
+                          << deviceDef.sampleRate << " Hz unavailable; opened "
+                          << extraEffectiveRate << " Hz.\n";
+            if (extraBufferFallback)
+                std::cout << "Extra ASIO " << driver << " Auto: requested buffer "
+                          << deviceDef.bufferSize << " unavailable; opened "
+                          << extra->getBufferSize() << " samples.\n";
             std::cout << "Extra ASIO: " << driver << " at " << extra->getRate() << " Hz, inputs=" << extra->getOpenedInputs() << ", outputs=" << extra->getOpenedOutputs() << "\n";
             extraAsioIds.insert (deviceDef.id);
             extraAsioDevices[deviceDef.id] = std::move (extra);
@@ -3847,6 +4001,21 @@ namespace
                     di->setProperty ("requestedRate", dd.sampleRate);
                     di->setProperty ("requestedBuffer", dd.bufferSize);
                     di->setProperty ("rateAuto", dd.rateAuto);
+                    di->setProperty ("rateFallback", false);
+                    di->setProperty ("bufferFallback", false);
+                    if (auto fit = asioFormatInfo.find (dd.id); fit != asioFormatInfo.end())
+                    {
+                        di->setProperty ("rateAuto", fit->second.rateAuto);
+                        di->setProperty ("rateFallback", fit->second.rateFallback);
+                        di->setProperty ("bufferFallback", fit->second.bufferFallback);
+                        if (fit->second.effectiveBuffer > 0)
+                            di->setProperty ("effectiveBuffer", fit->second.effectiveBuffer);
+                        juce::Array<juce::var> rateList, bufferList;
+                        for (auto r : fit->second.availableRates) rateList.add (r);
+                        for (auto b : fit->second.availableBuffers) bufferList.add (b);
+                        di->setProperty ("availableRates", rateList);
+                        di->setProperty ("availableBuffers", bufferList);
+                    }
                     double deviceActualRate = -1.0;
                     int deviceActualBuffer = -1;
                     int deviceInputs = -1;

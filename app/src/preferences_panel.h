@@ -192,7 +192,7 @@ struct EngineUiSettings
 class PreferencesComponent final : public juce::Component
 {
 public:
-    std::function<void (double sampleRate, int bufferSize, EngineUiSettings engine,
+    std::function<void (double sampleRate, int bufferSize, bool rateAuto, EngineUiSettings engine,
                         std::vector<DeviceFormatChoice> extraFormats)> onApply;
     std::function<void (const juce::String& languageCode)> onLanguageChanged;
     std::function<void()> onClose;
@@ -200,8 +200,10 @@ public:
     PreferencesComponent (double sampleRateIn, int bufferIn, EngineUiSettings engineIn,
                           std::vector<double> availableRatesIn,
                           std::vector<int> availableBuffersIn,
-                          std::vector<DeviceFormatChoice> extraDevicesIn)
-        : initialRate (sampleRateIn), initialBuffer (bufferIn), engine (engineIn),
+                          std::vector<DeviceFormatChoice> extraDevicesIn,
+                          bool rateAutoIn = true)
+        : initialRate (sampleRateIn), initialBuffer (bufferIn), initialRateAuto (rateAutoIn),
+          engine (engineIn),
           availableRates (std::move (availableRatesIn)),
           availableBuffers (std::move (availableBuffersIn)),
           extraDevices (std::move (extraDevicesIn))
@@ -347,7 +349,7 @@ public:
                     : latency.getSelectedId() == 3 ? 1024 : 256;
             const double r = advanced.getToggleState() && rate.getSelectedId() > 0
                                  ? (double) rate.getSelectedId() : initialRate;
-            if (onApply) onApply (r, b, readEngineSettings(), readExtraFormats());
+            if (onApply) onApply (r, b, initialRateAuto, readEngineSettings(), readExtraFormats());
         };
         addAndMakeVisible (cancel);
         L10n::bindButtonText (cancel, "Annulla");
@@ -674,6 +676,7 @@ private:
 
     double initialRate;
     int initialBuffer;
+    bool initialRateAuto;
     EngineUiSettings engine;
     std::vector<double> availableRates;
     std::vector<int> availableBuffers;

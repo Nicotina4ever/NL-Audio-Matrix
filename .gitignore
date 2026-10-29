@@ -106,3 +106,6 @@ reports/**
 driver/package*/
 *.log.err
 *.err
+
+# per-teammate build dirs (regenerabili)
+app/build-*/
