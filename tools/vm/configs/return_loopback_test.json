@@ -1,0 +1,27 @@
+{
+  "name": "Endpoint audio verification: NL Return 1..4 loopback -> NL Mic 1..4",
+  "asio": "FlexASIO",
+  "version": 3,
+  "devices": [
+    { "id": "flex", "backend": "asio", "driver": "FlexASIO", "sampleRate": 48000, "buffer": 256, "clockMaster": true, "rateAuto": true }
+  ],
+  "buses": [],
+  "sources": [
+    { "id": "r1", "name": "NL Return 1 loopback", "type": "loopback", "endpoint": "NL Return 1", "channels": [0, 1], "enabled": true },
+    { "id": "r2", "name": "NL Return 2 loopback", "type": "loopback", "endpoint": "NL Return 2", "channels": [0, 1], "enabled": true },
+    { "id": "r3", "name": "NL Return 3 loopback", "type": "loopback", "endpoint": "NL Return 3", "channels": [0, 1], "enabled": true },
+    { "id": "r4", "name": "NL Return 4 loopback", "type": "loopback", "endpoint": "NL Return 4", "channels": [0, 1], "enabled": true }
+  ],
+  "destinations": [
+    { "id": "m1", "name": "NL Mic 1", "type": "driver", "driverEndpoint": 0, "channels": [0, 1], "enabled": true },
+    { "id": "m2", "name": "NL Mic 2", "type": "driver", "driverEndpoint": 1, "channels": [0, 1], "enabled": true },
+    { "id": "m3", "name": "NL Mic 3", "type": "driver", "driverEndpoint": 2, "channels": [0, 1], "enabled": true },
+    { "id": "m4", "name": "NL Mic 4", "type": "driver", "driverEndpoint": 3, "channels": [0, 1], "enabled": true }
+  ],
+  "routes": [
+    { "source": "r1", "destination": "m1", "gainDb": 0 },
+    { "source": "r2", "destination": "m2", "gainDb": 0 },
+    { "source": "r3", "destination": "m3", "gainDb": 0 },
+    { "source": "r4", "destination": "m4", "gainDb": 0 }
+  ]
+}

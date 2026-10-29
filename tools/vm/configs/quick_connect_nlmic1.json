@@ -1,0 +1,16 @@
+{
+  "name": "Quick Connect: single ASIO channel -> NL Mic 1 -> real Windows client",
+  "asio": "FlexASIO",
+  "version": 3,
+  "devices": [
+    { "id": "flex", "backend": "asio", "driver": "FlexASIO", "sampleRate": 48000, "buffer": 256, "clockMaster": true, "rateAuto": true }
+  ],
+  "buses": [],
+  "sources": [
+    { "id": "s0", "name": "ASIO ch1 1k tone", "type": "test", "deviceId": "flex", "channels": [0], "enabled": true, "baseFrequency": 1000, "testLevel": 0.25 }
+  ],
+  "destinations": [
+    { "id": "d0", "name": "NL Mic 1", "type": "driver", "driverEndpoint": 0, "channels": [0], "enabled": true }
+  ],
+  "routes": [ { "source": "s0", "destination": "d0", "gainDb": 0 } ]
+}

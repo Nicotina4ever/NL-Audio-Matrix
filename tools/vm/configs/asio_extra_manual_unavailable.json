@@ -1,0 +1,16 @@
+{
+  "name": "ASIO format matrix: extra ASIO device Manual with unavailable rate (expect exit 23, no silent fallback)",
+  "asio": "FlexASIO", "version": 3,
+  "devices": [
+    { "id": "flex", "backend": "asio", "driver": "FlexASIO", "sampleRate": 48000, "buffer": 256, "clockMaster": true, "rateAuto": true },
+    { "id": "reroute", "backend": "asio", "driver": "ReaRoute ASIO (x64)", "sampleRate": 22050, "buffer": 128, "clockMaster": false, "rateAuto": false }
+  ],
+  "buses": [],
+  "sources": [
+    { "id": "s0", "name": "ReaRoute ch1", "type": "asio-in", "deviceId": "reroute", "channels": [0], "enabled": true }
+  ],
+  "destinations": [
+    { "id": "d0", "name": "NL Mic 1", "type": "driver", "driverEndpoint": 0, "channels": [0], "enabled": true }
+  ],
+  "routes": [ { "source": "s0", "destination": "d0", "gainDb": 0 } ]
+}
