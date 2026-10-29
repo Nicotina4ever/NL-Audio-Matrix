@@ -1,7 +1,59 @@
 # DEVELOPMENT_STATE — NL Audio Matrix
 
-**Updated:** 2026-10-29 (Europe/Rome)
+**Updated:** 2026-10-29 22:10 (Europe/Rome)
 **Objective:** complete the audio engine, real Focusrite validation and professional GUI without false PASSes.
+
+## Increment 2026-10-29 22:10 — Quick Connect with a real Windows client, GUI format bar, installer modes
+
+Commit `01c6f2d`. All audio/driver tests below ran **inside the VMware Player VM**;
+the host only compiles binaries and runs the WAV analyzer.
+
+- **Quick Connect verified with a real third-party Windows client** (the missing
+  acceptance criterion): `tools/vm/Run-QuickConnectRealClient.ps1` runs the guest's
+  ffmpeg 9.0.2 as a DirectShow capture client on the NL Mic 1 endpoint while the
+  router feeds it (`tools/vm/configs/quick_connect_nlmic1.json`, single ASIO channel
+  in -> NL Mic 1 ch1). Negative control with no router: silent (-98 dBFS). Positive,
+  VM, after a full driver reinstall: 12.2 s tone at RMS -17.0 dBFS, FFT 999.98-1000.02 Hz,
+  0 dropouts, 0 real/sub-sample splices, phase drift -2.6..-5.7 ppm, router exit 0,
+  analyzer `analyze_continuity.py` 1.2.0 PASS. Repeated PASS on three builds/installs
+  (before reinstall, after reinstall, after clean install). Evidence (local, git-ignored):
+  `reports/quickconnect/2026-10-29/` (`quickconnect_summary.json`, WAV, analyzer JSON,
+  control WAV). A router that merely stays alive is no longer accepted as proof.
+- **GUI audio format bar** (`app/src/ui_main.cpp`): master ASIO row plus one row per
+  extra ASIO driver on the main surface, each with rate combo, Auto/Manuale switch,
+  buffer combo and actual ("Attivo") column from METERS; engine mode
+  Low/Balanced/Safe/Avanzate (Advanced exposes its numeric fields) selectable without
+  opening Preferences; "Applica scheda audio" performs graceful stop/restart.
+  `rateAuto` now round-trips profile/preferences/last-session and devices[] JSON.
+  VM GUI selftest **67/67 PASS** (56 before; 11 new checks), guiverify 8/8.
+- **Per-device ASIO format negotiation** (`app/src/router_main.cpp`): `rateAuto` is now
+  honoured for every extra ASIO device, not only the master. Auto picks the nearest
+  supported rate / smallest supported buffer >= request; Manual never silently changes
+  the rate (pre-check when the driver publishes rates, post-open check otherwise).
+  Buffer size is a request rounded to a supported value and reported, never silent.
+  METERS `devices[]` now carry `rateAuto`, `rateFallback`, `bufferFallback`,
+  `effectiveBuffer`, `availableRates`, `availableBuffers` for the GUI and diagnostics.
+  VM matrix (`tools/vm/configs/asio_*_unavailable.json`): FlexASIO buffer 256 -> 960
+  reported `bufferFallback=true`; ReaRoute extra 128 -> 1024 same; both VM drivers accept
+  22050 Hz and publish an empty rate list, so the rate-fallback branch could not be
+  exercised here (it degrades to the post-open strict check) - hardware/driver with a
+  real rate list still pending.
+- **Installer modes verified in the VM** with `installer/build/NLMatrixSetup.exe`
+  hash `6f0ffa28...` (`--mode install|repair|upgrade|uninstall /silent`):
+  upgrade = 0 (app files replaced, driver package current, endpoints re-checked),
+  repair = 0 (deleted `NLMatrixUI.exe` restored, 1 item repaired, presets kept),
+  uninstall = 20 reboot-required (device removed, 7 driver packages queued, 2 certs
+  removed, app dir + ARP gone; after guest reboot: no NLMatrix PnP device, DRVSTORE
+  packages 0, ARP absent, 6 stale *inactive* endpoint nodes remain), clean install
+  after reboot = 0 (device installed, service running, test cert trust, 6 active
+  endpoints), second install = 0 idempotent. Forced driver reinstall
+  (`devcon remove` + install mode) bound image SHA256 `cd95712e...`, service RUNNING.
+  Logs: `reports/installer/2026-10-29/NLMatrixSetup-*.log` (local).
+- **Open defect found and confirmed**: only **6 of 8** NL endpoints activate -
+  NL Mic 1..4 and NL Return 2/3 are active, **NL Return 1 and NL Return 4 never
+  activate** (stable across upgrade, repair, full uninstall+reboot+clean install).
+  This is driver endpoint provisioning, not the installer. It blocks the 4+2 preset
+  and A6/A7. Next driver task: enumerate the return endpoints in the INF/device list.
 
 ## Increment 2026-10-29 — installer devcon presence fix + rate fallback / multi-ASIO VM verification
 

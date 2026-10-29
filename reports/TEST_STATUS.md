@@ -3,8 +3,8 @@
 **Documento unico di stato test.** Aggiornare questo file soltanto dopo un test
 significativo; non creare report duplicati. Le evidenze restano nei log indicati.
 
-- **Ultimo aggiornamento:** 2026-10-29 (Europe/Rome)
-- **Build verificata:** Alpha 0.4.0-alpha. Engine **FINAL5** router SHA256 `2AE82FEB...` (frozen `vm/baseline/NLMatrixRouter_engine_v5_FINAL.exe`) con API per la GUI (--control graceful stop, METERS devices[], exit 24, driverTargetMs), GUI build sha256 `dbd69a86...` (selftest **54/54**, layouts 8/8, cambio formato reale 48k→44.1k→48k via graceful stop), driver ABI3 installato in VM (image SHA256 CD95712E...). Evidenze engine: `reports/engine/final_acceptance_v5/` + `reports/engine/FINAL_STATUS.md`; GUI: `reports/MVP/gui_verify_20261027/`.
+- **Ultimo aggiornamento:** 2026-10-29 22:10 (Europe/Rome)
+- **Build verificata (2026-10-29 22:10):** Alpha 0.5.0-alpha buildId `20261028-0113-7adcedb`; router `5532A3FD`+hardening formato ASIO, GUI con barra formati (selftest VM **67/67**), installer `NLMatrixSetup.exe` SHA256 `6f0ffa28...`, driver ABI3 image `cd95712e...`. Evidenze: `reports/quickconnect/2026-10-29/`, `reports/installer/2026-10-29/` (locali, git-ignored).
 - **Evidenze storiche (cleanup 2026-10-27):** i file di primo livello di `reports/MVP/` (screenshot/WAV/log 24-27/10) sono archiviati in `da_eliminare/2026-10-27-consolidation/reports-superseded/MVP-legacy/` (stessi nomi); restano attive le sottocartelle `reports/MVP/audio/`, `reports/MVP/gui_verify_20261027/`, `reports/MVP/DIAG_HOST_TEST/`. Accettazione e validazione FINAL4 sono in `da_eliminare/2026-10-27-consolidation/reports-superseded/` (`-FINAL4`); evidenze correnti: `reports/engine/final_acceptance_v5/`, `reports/engine/final5_markers/`. Il materiale archiviato è reversibile e consultabile.
 - **Laboratorio principale:** VM Windows 11 x64 con FlexASIO, ReaRoute ASIO x64,
   NLMatrix Virtual Audio Device (4 coppie), VB-CABLE diagnostico.
@@ -238,6 +238,50 @@ multi-ASIO runtime, interazione GUI buffer modes/selftest, recovery con
 disconnessione reale, registrazione vocale post-fix su Focusrite. Vedi `TASKS.md`
 (A4/A5/A9/A10/A11/B4/C11).
 
+## Aggiornamento 2026-10-29 22:10 — Quick Connect con client reale, barra formati GUI, installer 4 modalità (VM)
+
+Tutte le prove audio/driver sono state eseguite **dentro la VM VMware Player**; l'host
+compila e analizza i WAV, non tocca i dispositivi audio del PC.
+
+**Quick Connect con client Windows reale (A17) — PASS.** `tools/vm/Run-QuickConnectRealClient.ps1`
+avvia nel guest ffmpeg 9.0.2 come client DirectShow sull'endpoint **NL Mic 1** mentre il
+router lo alimenta (config `tools/vm/configs/quick_connect_nlmic1.json`, singolo canale
+ASIO -> NL Mic 1 ch1). Controllo negativo senza router: silenzio (-98 dBFS). Prova
+positiva (dopo reinstallazione driver completa): 12.2 s, RMS -17.0 dBFS, FFT
+999.98–1000.02 Hz, 0 dropout, 0 splice reali/sub-sample, drift -2.6..-5.7 ppm, router
+EXITCODE=0, `analyze_continuity.py` 1.2.0 PASS. Ripetuto PASS su tre build/install
+(prima, dopo reinstall driver, dopo install pulita). Evidenze locali: WAV, JSON analyzer,
+`quickconnect_summary.json`.
+
+**GUI (A18) — PASS VM 67/67.** Nuova barra formati audio nella finestra principale:
+riga master ASIO + una riga per ogni driver ASIO extra (rate, buffer, Auto/Manuale,
+valore effettivo da METERS), modalità motore Low/Balanced/Safe/Avanzate senza aprire
+Preferences; apply con stop/restart graceful; `rateAuto` persistito in
+profile/preferences/last-session/devices[].
+
+**Router — negoziazione formato per device (A19).** `rateAuto` rispettato anche per i
+device ASIO extra; Auto sceglie rate più vicino e buffer più piccolo >= richiesta;
+Manuale non cambia mai il rate silenziosamente (pre-check su lista pubblicata,
+post-check strict altrimenti); buffer richiesta con `bufferFallback` riportato; METERS
+`devices[]` espone rateAuto/rateFallback/bufferFallback/effectiveBuffer/availableRates/
+availableBuffers. Matrice VM: FlexASIO 256->960, ReaRoute extra 128->1024 (fallback
+buffer osservato). I driver della VM accettano rate arbitrari e pubblicano lista vuota,
+quindi il ramo fallback-rate non è esercitabile in VM: resta da provare su driver con
+lista rate reale.
+
+**Installer 4 modalità (D4/D11) — PASS VM.** `NLMatrixSetup.exe` hash `6f0ffa28...`:
+upgrade 0 (app sostituite, driver corrente), repair 0 (NLMatrixUI.exe cancellato e
+ripristinato, preset conservati), uninstall 20 richiede reboot (device rimosso, 7
+pacchetti driver in coda, 2 certificati rimossi, app dir e ARP rimossi; dopo reboot nel
+guest: nessun device PnP NLMatrix, DRVSTORE 0, ARP assente), install pulita dopo reboot 0
+(device, servizio, certificato, 6 endpoint attivi), reinstall 0 idempotente.
+Reinstall driver forzata (devcon remove + install): immagine `cd95712e...`, servizio
+RUNNING. Log: `reports/installer/2026-10-29/NLMatrixSetup-{upgrade,repair,uninstall,install}.log`.
+
+**Difetto aperto (A6/A7):** solo **6 endpoint su 8** attivi — NL Mic 1..4 e
+NL Return 2/3 OK; **NL Return 1 e NL Return 4 non si attivano** (stabile su upgrade,
+repair, uninstall+reboot+install pulita). È provisioning endpoint lato driver
+(INF/device list), non installer. Blocca preset 4+2 e routing di ritorno A7.
 ## Aggiornamento 2026-10-29 — Installer devcon presence fix + rate fallback e multi-ASIO (VM)
 
 **Build verificata:** Alpha **0.5.0-alpha**, buildId `20261028-0113-7adcedb`, commit
