@@ -20,6 +20,22 @@ struct MixerStripInfo
     bool hasMixMinus = false;
 };
 
+// Fixed metrics: controls never shrink below these values.  When the dock is too
+// small the mixer scrolls (horizontal for many strips, vertical for a short
+// dock) instead of compressing buttons and labels into unusable slivers.
+namespace MixerMetrics
+{
+    constexpr int minStripWidth = 136;
+    constexpr int maxStripWidth = 208;
+    constexpr int padding = 8;
+    constexpr int headerHeight = 40;
+    constexpr int panHeight = 22;
+    constexpr int faderMinHeight = 96;
+    constexpr int buttonHeight = 26;
+    constexpr int rowGap = 4;
+    constexpr int buttonRows = 3; // solo / mute+polarity / enable+monitor|mix-minus
+}
+
 class MixerStrip final : public juce::Component
 {
 public:
@@ -139,7 +155,42 @@ public:
 
         updateButtonTexts();
         setInfo (info);
-        setSize (118, 372);
+        setSize (MixerMetrics::minStripWidth, preferredHeight());
+    }
+
+    // Minimum height at which every control keeps its usable size.  The dock may
+    // never hand a strip less than this: the mixer grows its content instead.
+    static int preferredHeight()
+    {
+        return MixerMetrics::padding * 2
+             + MixerMetrics::headerHeight
+             + MixerMetrics::panHeight
+             + MixerMetrics::faderMinHeight
+             + MixerMetrics::buttonRows * (MixerMetrics::buttonHeight + MixerMetrics::rowGap);
+    }
+
+    // Deterministic layout checks used by the GUI test: no control clipped, no
+    // button below the minimum height, nothing outside the strip.
+    bool layoutIsUsable() const
+    {
+        if (getWidth() < MixerMetrics::minStripWidth || getHeight() < preferredHeight())
+            return false;
+        const auto bounds = getLocalBounds();
+        for (const juce::Component* c : { (const juce::Component*) &fader,
+                                          (const juce::Component*) &pan,
+                                          (const juce::Component*) &mute,
+                                          (const juce::Component*) &solo,
+                                          (const juce::Component*) &polarity,
+                                          (const juce::Component*) &enableButton,
+                                          (const juce::Component*) &monitor,
+                                          (const juce::Component*) &mixMinusButton })
+        {
+            if (c == nullptr || ! c->isVisible())
+                continue;
+            if (c->getHeight() < 18 || ! bounds.contains (c->getBounds()))
+                return false;
+        }
+        return true;
     }
 
     void setInfo (const MixerStripInfo& next)
@@ -219,18 +270,29 @@ public:
 
     void resized() override
     {
-        auto area = getLocalBounds().reduced (8);
-        area.removeFromTop (38);
-        area.removeFromRight (18);
+        auto area = getLocalBounds().reduced (MixerMetrics::padding);
+        area.removeFromTop (MixerMetrics::headerHeight);
+        area.removeFromRight (18); // level meter column
+
         if (info.hasPan)
-            pan.setBounds (area.removeFromTop (18));
-        // Fixed bottom controls: solo, mute+polarity, enable+monitor/mix-minus.
-        const int rowsHeight = 24 + 3 + 26 + 3 + 22 + 3;
-        fader.setBounds (area.removeFromTop (juce::jmax (70, area.getHeight() - rowsHeight)));
-        area.removeFromTop (3);
-        solo.setBounds (area.removeFromTop (24).reduced (4, 0));
-        area.removeFromTop (3);
-        auto muteRow = area.removeFromTop (26);
+            pan.setBounds (area.removeFromTop (MixerMetrics::panHeight));
+
+        // Rows are fixed-size: they never shrink with the dock.  If the dock is
+        // shorter than preferredHeight() the content is taller and scrolls.
+        const int fixedRows = MixerMetrics::buttonRows
+                              * (MixerMetrics::buttonHeight + MixerMetrics::rowGap);
+        fader.setBounds (area.removeFromTop (juce::jmax (MixerMetrics::faderMinHeight,
+                                                         area.getHeight() - fixedRows)));
+
+        auto nextRow = [&area]() -> juce::Rectangle<int>
+        {
+            area.removeFromTop (MixerMetrics::rowGap);
+            return area.removeFromTop (MixerMetrics::buttonHeight);
+        };
+
+        solo.setBounds (nextRow().reduced (2, 0));
+
+        auto muteRow = nextRow();
         if (info.hasPolarity)
         {
             mute.setBounds (muteRow.removeFromLeft (muteRow.getWidth() / 2 - 2));
@@ -239,22 +301,35 @@ public:
         }
         else
         {
-            mute.setBounds (muteRow.reduced (4, 0));
+            mute.setBounds (muteRow.reduced (2, 0));
         }
-        area.removeFromTop (3);
-        auto lastRow = area.removeFromTop (22);
-        if (info.hasMonitor || info.hasMixMinus)
+
+        auto lastRow = nextRow();
+        const bool destinationExtras = info.hasMonitor || info.hasMixMinus;
+        if (destinationExtras)
         {
-            enableButton.setBounds (lastRow.removeFromLeft (lastRow.getWidth() / 2 - 2));
-            lastRow.removeFromLeft (4);
-            if (info.hasMixMinus)
-                mixMinusButton.setBounds (lastRow.removeFromLeft (juce::jmax (30, lastRow.getWidth() / 2)));
-            if (info.hasMonitor)
+            // Three equal buttons: ENABLE | MM | MON (no half-size slivers).
+            const int third = juce::jmax (34, (lastRow.getWidth() - 4) / 3);
+            enableButton.setBounds (lastRow.removeFromLeft (third));
+            lastRow.removeFromLeft (2);
+            if (info.hasMixMinus && info.hasMonitor)
+            {
+                mixMinusButton.setBounds (lastRow.removeFromLeft (third));
+                lastRow.removeFromLeft (2);
                 monitor.setBounds (lastRow);
+            }
+            else if (info.hasMixMinus)
+            {
+                mixMinusButton.setBounds (lastRow);
+            }
+            else
+            {
+                monitor.setBounds (lastRow);
+            }
         }
         else
         {
-            enableButton.setBounds (lastRow.reduced (4, 0));
+            enableButton.setBounds (lastRow.reduced (2, 0));
         }
     }
 
@@ -295,8 +370,33 @@ public:
         close.setTooltip (L10n::tr ("Chiudi mixer", "Close mixer"));
         close.onClick = [this] { if (onClose) onClose(); };
         viewport.setViewedComponent (&content, false);
-        viewport.setScrollBarsShown (false, true);
+        // Both directions: many strips scroll horizontally, a short dock scrolls
+        // vertically instead of compressing the strip controls.
+        viewport.setScrollBarsShown (true, true);
         startTimerHz (30);
+    }
+
+    // --- deterministic layout checks used by the GUI mixer test ---------------
+    void refreshForTest() { refresh(); }
+    int stripCount() const { return (int) strips.size(); }
+    int stripWidthForTest() const
+    {
+        return strips.empty() ? 0 : strips.front()->getWidth();
+    }
+    int contentWidth() const { return content.getWidth(); }
+    int contentHeight() const { return content.getHeight(); }
+    juce::Rectangle<int> stripBounds (int index) const
+    {
+        if (index < 0 || index >= (int) strips.size())
+            return {};
+        return strips[(size_t) index]->getBounds();
+    }
+    bool stripsLayoutIsUsable() const
+    {
+        for (const auto& strip : strips)
+            if (! strip->layoutIsUsable())
+                return false;
+        return true;
     }
 
     void resized() override
@@ -369,16 +469,19 @@ private:
 
     void layoutStrips()
     {
-        const int stripWidth = 118;
-        const int viewportWidth = juce::jmax (1, viewport.getWidth() - 12);
         const int count = juce::jmax (1, (int) strips.size());
-        const int width = juce::jmax (viewportWidth, count * stripWidth + 8);
-        // Fit strips to the visible pane: the old fixed 320/330 px design height
-        // was taller than the dock at 1366x768, clipping fader/dB/buttons.
-        const int stripHeight = juce::jmax (250, viewport.getHeight() - 8);
+        const int availableWidth = juce::jmax (1, viewport.getWidth() - 12);
+        // Spread the strips over the dock up to a comfortable maximum; below the
+        // minimum width the viewport scrolls horizontally instead of shrinking.
+        const int stripWidth = juce::jlimit (MixerMetrics::minStripWidth,
+                                             MixerMetrics::maxStripWidth,
+                                             availableWidth / count);
+        const int stripHeight = juce::jmax (viewport.getHeight() - 8,
+                                            MixerStrip::preferredHeight());
+        const int width = juce::jmax (availableWidth, count * stripWidth + 8);
         content.setSize (width, stripHeight + 8);
         for (int i = 0; i < (int) strips.size(); ++i)
-            strips[(size_t) i]->setBounds (4 + i * stripWidth, 4, stripWidth - 4, stripHeight);
+            strips[(size_t) i]->setBounds (4 + i * stripWidth, 4, stripWidth, stripHeight);
     }
 
     juce::Viewport viewport;

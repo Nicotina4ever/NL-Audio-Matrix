@@ -43,7 +43,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('smoke','guiselftest','guilifecycle','guistudio','guiquickconnect','quickconnect','endpoints','endpoints8','mixminus','matrix')]
+    [ValidateSet('smoke','guiselftest','guilifecycle','guistudio','guimixer','guiquickconnect','quickconnect','endpoints','endpoints8','mixminus','distcheck','matrix')]
     [string]$Suite = 'smoke',
     [string]$OutRoot = '',
     [string]$BuildDir = '',
@@ -122,6 +122,11 @@ function Get-SuiteSteps([string]$suite) {
         'guistudio' {
             return @(@{ name = 'Studio surface'; kind = 'gui-studiotest' })
         }
+        'guimixer' {
+            # Responsive channel strips: many strips, window sizes, 125%/150% DPI
+            # simulation and horizontal scrolling.
+            return @(@{ name = 'Mixer responsive layout'; kind = 'gui-mixertest' })
+        }
         'quickconnect' {
             return @(@{ name = 'Quick Connect real client'; kind = 'script';
                        script = 'tools\vm\Run-QuickConnectRealClient.ps1'; args = @() })
@@ -148,6 +153,12 @@ function Get-SuiteSteps([string]$suite) {
             # sources, no capture path, no WAV analysis).
             return @(@{ name = 'Mix-minus and bus level proof'; kind = 'script';
                        script = 'tools\vm\Run-MixMinusProof.ps1'; args = @() })
+        }
+        'distcheck' {
+            # Distribution acceptance: portable user-mode (VB-CABLE path) and the
+            # full NL installer modes in the VM.
+            return @(@{ name = 'Portable + installer distribution check'; kind = 'script';
+                       script = 'tools\vm\Run-DistributionCheck.ps1'; args = @() })
         }
         'endpoints' {
             return @(@{ name = 'Endpoint audio verification'; kind = 'script';
@@ -302,6 +313,24 @@ function Invoke-GuiStudioTest([string]$runDir, [int]$timeoutSec) {
     return [pscustomobject]@{ status = $status; metrics = $metrics }
 }
 
+function Invoke-GuiMixerTest([string]$runDir, [int]$timeoutSec) {
+    . $script:VmHelpers
+    $log = Join-Path $runDir 'logs\gui-mixer.log'
+    Deploy-SnapshotToGuest
+    $guestLog = 'C:\Users\NLMatrix\AppData\Local\Temp\nlmatrix_mixertest.log'
+    NL-Exec ('del /f /q "' + $guestLog + '" 2>nul & echo CLEARED') -TimeoutSec 60 | Out-Null
+    $text = NL-Exec 'C:\NLMatrix\NLMatrixUI.exe --mixertest' -TimeoutSec $timeoutSec
+    $report = ''
+    try { $report = NL-Exec ('type "' + $guestLog + '"') -TimeoutSec 60 } catch { }
+    Set-Content -Path $log -Value ($text + "`n" + $report) -Encoding UTF8
+    $pass = ([regex]::Matches($report, '(?m)^PASS ')).Count
+    $fail = ([regex]::Matches($report, '(?m)^FAIL ')).Count
+    $complete = $report -match 'SUMMARY mixer layout complete'
+    $metrics = [ordered]@{ pass = $pass; fail = $fail; mixerComplete = $complete }
+    $status = if ($fail -eq 0 -and $pass -ge 5 -and $complete) { 'PASS' } else { 'FAIL' }
+    return [pscustomobject]@{ status = $status; metrics = $metrics }
+}
+
 function Invoke-Run([string]$suite, [string]$runId, [string]$runDir, $manifest, [int]$timeoutMinutes) {
     $deadline = (Get-Date).AddMinutes($timeoutMinutes)
     $steps = @()
@@ -369,6 +398,11 @@ function Invoke-Run([string]$suite, [string]$runId, [string]$runDir, $manifest, 
                     foreach ($k in $r.metrics.Keys) { $metrics[$k] = $r.metrics[$k] }
                     if ($r.status -ne 'PASS') { $status = 'FAIL' }
                 }
+                'gui-mixertest' {
+                    $r = Invoke-GuiMixerTest $runDir ([Math]::Min($remaining, 420))
+                    foreach ($k in $r.metrics.Keys) { $metrics[$k] = $r.metrics[$k] }
+                    if ($r.status -ne 'PASS') { $status = 'FAIL' }
+                }
             }
             Assert-BuildUnchanged $manifest $def.name
         } catch {
@@ -420,7 +454,7 @@ if ($Unattended) {
         $summaryPath = Join-Path $runDir 'summary.json'
         $result = 'ERROR'; $steps = @(); $summaryText = ''
         try {
-            if (-not $Force -and $Suite -in @('quickconnect','guiquickconnect','endpoints','mixminus','matrix')) {
+            if (-not $Force -and $Suite -in @('quickconnect','guiquickconnect','endpoints','mixminus','distcheck','matrix')) {
                 $busy = Test-AudioSessionBusy
                 if ($busy) { throw "BUSY: $busy" }
             }

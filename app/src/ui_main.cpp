@@ -5638,6 +5638,109 @@ namespace
             }
         }
 
+        // Responsive mixer verification: many strips, every control usable at the
+        // supported window sizes and at 125%/150% DPI simulation, horizontal
+        // scrolling when the strips do not fit.  Runs in test mode, then quits.
+        void runMixerLayoutTest()
+        {
+            const auto file = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                  .getChildFile ("nlmatrix_mixertest.log");
+            file.deleteFile();
+            auto log = [file] (const juce::String& line) { file.appendText (line + "\n"); };
+            log ("NL Audio Matrix mixer layout test");
+            // Representative project: sources, buses and destinations with the
+            // different strip layouts (pan/polarity vs monitor/mix-minus).
+            while ((int) sources.size() < 3) addNodeFromCanvas ("source");
+            while ((int) buses.size() < 2) addNodeFromCanvas ("bus");
+            while ((int) destinations.size() < 2) addNodeFromCanvas ("destination");
+            configureMixer();
+            setMixerVisible (true);
+            juce::Thread::sleep (300);
+
+            auto expectedStrips = [this]()
+            {
+                int expected = 0;
+                for (const auto& s : sources)
+                    if (s.type != "bus") ++expected;
+                expected += (int) buses.size() + (int) destinations.size();
+                return expected;
+            };
+
+            auto check = [this, &log, &expectedStrips] (const juce::String& label,
+                                                       bool checkWindowLayout = true) -> bool
+            {
+                resized();
+                mixerPanel.refreshForTest();
+                juce::Thread::sleep (120);
+                const auto problems = layoutViolations();
+                const bool stripsOk = mixerPanel.stripsLayoutIsUsable();
+                const bool countOk = mixerPanel.stripCount() == expectedStrips();
+                const bool widthOk = mixerPanel.stripWidthForTest() >= MixerMetrics::minStripWidth;
+                const bool ok = stripsOk && countOk && widthOk
+                                && (! checkWindowLayout || problems.isEmpty());
+                juce::String detail;
+                if (! ok)
+                {
+                    detail = " [violations=" + juce::String ((int) problems.size())
+                             + (checkWindowLayout && ! problems.isEmpty()
+                                    ? ": " + problems.joinIntoString ("; ") : juce::String())
+                             + (stripsOk ? juce::String() : ", strips-unusable")
+                             + (widthOk ? juce::String() : ", strip-width="
+                                                             + juce::String (mixerPanel.stripWidthForTest()))
+                             + (countOk ? juce::String()
+                                        : ", strips=" + juce::String (mixerPanel.stripCount())
+                                                       + "/" + juce::String (expectedStrips()))
+                             + "]";
+                }
+                log (juce::String (ok ? "PASS " : "FAIL ") + label + detail);
+                return ok;
+            };
+
+            auto* top = getTopLevelComponent();
+            const auto savedBounds = top != nullptr ? top->getBounds() : juce::Rectangle<int>();
+            const int expected = expectedStrips();
+            bool allOk = true;
+            for (const auto& size : { std::pair<int,int> { 1366, 768 },
+                                      std::pair<int,int> { 1600, 900 },
+                                      std::pair<int,int> { 1920, 1080 } })
+            {
+                if (top != nullptr)
+                    top->setBounds (top->getX(), top->getY(), size.first, size.second);
+                allOk = check ("strips usable at " + juce::String (size.first) + "x"
+                               + juce::String (size.second)) && allOk;
+            }
+            allOk = check ("minimum strip width kept with many strips") && allOk;
+            const bool scrolls = mixerPanel.contentWidth() >= expected * MixerMetrics::minStripWidth;
+            log (juce::String (scrolls ? "PASS " : "FAIL ")
+                 + "strips scroll horizontally instead of shrinking (content="
+                 + juce::String (mixerPanel.contentWidth()) + " px, strips="
+                 + juce::String (expected) + ")");
+            allOk = allOk && scrolls;
+
+            // DPI simulation: JUCE global scale factor, the same mechanism Windows
+            // 125%/150% scaling uses for the component tree.  Only the mixer strip
+            // geometry is asserted here (the whole-window layout rules depend on
+            // the OS window size, which the scale factor changes).
+            for (const float scale : { 1.25f, 1.5f })
+            {
+                juce::Desktop::getInstance().setGlobalScaleFactor (scale);
+                juce::Thread::sleep (250);
+                if (top != nullptr)
+                    top->setBounds (top->getX(), top->getY(), 1366, 768);
+                allOk = check ("strips usable at "
+                               + juce::String ((int) std::lround (scale * 100.0f)) + "% scaling",
+                               false) && allOk;
+            }
+            juce::Desktop::getInstance().setGlobalScaleFactor (1.0f);
+            juce::Thread::sleep (200);
+            if (top != nullptr && ! savedBounds.isEmpty())
+                top->setBounds (savedBounds);
+
+            log (juce::String (allOk ? "PASS " : "FAIL ") + "mixer layout suite");
+            log ("SUMMARY mixer layout complete");
+            juce::JUCEApplication::getInstance()->systemRequestedQuit();
+        }
+
         void paint (juce::Graphics& g) override
         {
             juce::ColourGradient gradient (Palette::background, 0.0f, 0.0f,
@@ -6158,8 +6261,10 @@ namespace
                     problems.add (describeComponent (*c) + " not inside the left panel content");
 
             // Mixer dock: when visible it must be tall enough for a full strip
-            // (name + fader + dB + solo/mute).
-            if (mixerVisible && mixerPanel.getHeight() > 0 && mixerPanel.getHeight() < 360)
+            // (name + fader + dB + solo/mute).  The responsive strip keeps every
+            // control usable from ~300 px (below that the viewport scrolls), so
+            // the dock must never go under that.
+            if (mixerVisible && mixerPanel.getHeight() > 0 && mixerPanel.getHeight() < 300)
                 problems.add ("mixer dock too short: " + juce::String (mixerPanel.getHeight()) + " px");
 
             return problems;
@@ -6217,7 +6322,7 @@ namespace
                 // A mixer strip needs ~324 px for name+fader+dB+buttons; keep the
                 // dock tall enough that nothing is cut off at 1366x768 and above,
                 // while still leaving the routing area usable on very small windows.
-                const int minDock = 380;
+                const int minDock = 330;
                 const int dockHeight = juce::jlimit (160, juce::jmax (160, area.getHeight() - 120),
                                                      juce::jmax (minDock, mixerHeight));
                 auto mixerArea = area.removeFromBottom (dockHeight);
@@ -11398,8 +11503,11 @@ namespace
                 new AboutWindow();
 
             if (args.contains ("--mixertest"))
+            {
                 if (auto* content = window->getMainComponent())
-                    content->openMixer();
+                    content->runMixerLayoutTest();
+                return;
+            }
 
             if (args.contains ("--studiotest"))
                 window->runStudioTest();

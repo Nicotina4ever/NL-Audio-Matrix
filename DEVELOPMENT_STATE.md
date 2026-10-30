@@ -1,7 +1,26 @@
 # DEVELOPMENT_STATE — NL Audio Matrix
 
-**Updated:** 2026-10-30 12:15 (Europe/Rome)
+**Updated:** 2026-10-30 13:05 (Europe/Rome)
 **Objective:** complete the audio engine, real Focusrite validation and professional GUI without false PASSes.
+
+## Increment 2026-10-30 13:05 — responsive mixer, installer hardening, distribution
+
+- **Mixer responsive (C5)**: fixed strip metrics (136 px min width, 96 px min fader,
+  26 px buttons, three fixed rows), strips spread to 208 px when there is room, both
+  scrollbars when the dock is small. Suite `guimixer` PASS: 7 strips usable at
+  1366×768/1600×900/1920×1080, 125%/150% DPI simulation, horizontal scroll, minimum width.
+- **Installer (A28)**: `--mode diagnose` read-only report (driver state/INF DriverVer/
+  signature vs embedded certificate, trust, staged packages, endpoints, test-signing,
+  Secure Boot, decision) and an explicit `/accept-testsigning` gate: setup no longer
+  enables test signing without consent (exit 12 with instructions). `devcon install`
+  exit 2 + "Device node created" is a reboot-required success, not a failure.
+- **Distribution (A29)**: `build-release.ps1` emits the full NL installer and the
+  portable user-mode package (Apollo -> VB-CABLE preset, README, SHA256SUMS, BUILD_INFO,
+  RELEASE_NOTES). Suite `distcheck` PASS: portable clean payload, VB-CABLE render
+  online at -12 dBFS with a -21.1 dBFS browser-side capture and 0 gaps without using NL
+  endpoints; installer diagnose/install/repair/upgrade/reinstall 0 with 8 endpoints,
+  uninstall 20 + reboot, clean reinstall restores 8 endpoints.
+- A21/A22 remain open defects; no driver or Secure Boot change was applied to the host PC.
 
 ## Increment 2026-10-30 12:15 — Studio surface, operational mixer, magnetic patchbay
 
@@ -513,3 +532,5 @@ Prossimo lavoro: funzionalita' Quick Connect in GUI, routing bidirezionale, mixe
 - **Quick Connect in GUI**: chip + voce menu che costruisce il progetto minimo ASIO ch1 ->
   NL Mic 1, lo salva come ultima sessione e avvia il motore.
 - A21/A22 restano aperti e sospesi; nessuna nuova indagine sui toni.
+
+

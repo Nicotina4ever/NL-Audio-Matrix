@@ -133,8 +133,47 @@ Commit:   $commit
 No kernel driver, test certificate, devcon or installer is included.
 Run NLMatrixUI.exe; the GUI starts the router executable from the same folder.
 The package is for Windows 10/11 x64 and does not install or modify drivers.
+
+QUICK CONNECT — APOLLO MIC 1 -> VB-CABLE (no NL driver needed)
+---------------------------------------------------------------
+1. Install VB-CABLE if it is not already on the PC (third-party, not included).
+2. Open NLMatrixUI.exe, choose "Universal Audio USB ASIO" as the ASIO device,
+   then File > Open profile and load PRESET_Apollo_to_VB-CABLE.json; press
+   Apply/Start. The preset routes ASIO MIC 1 to the WASAPI render endpoint
+   "CABLE Input".
+3. In the browser/meeting app select the microphone "CABLE Output".
+4. In Diagnostics check requested/actual sample rate and buffer, and that the
+   meters move while speaking. Stop the engine when finished.
+
+Using the NL Mic / NL Return endpoints requires the full installer package
+(application + engine + NL virtual driver) on a Windows build where the
+test-signed driver can load. See RELEASE_NOTES.md.
 "@
 Set-Content -Path (Join-Path $portable 'README.txt') -Value $readme -Encoding UTF8
+
+# Ready-made user-mode project for the manual Apollo test (no NL driver needed).
+$apolloPreset = @"
+{
+  "version": 3,
+  "name": "Apollo MIC 1 -> VB-CABLE",
+  "asio": "Universal Audio USB ASIO",
+  "devices": [
+    { "id": "asio:Universal Audio USB ASIO", "backend": "asio", "driver": "Universal Audio USB ASIO",
+      "sampleRate": 48000, "buffer": 256, "clockMaster": true, "rateAuto": true }
+  ],
+  "buses": [],
+  "sources": [
+    { "id": "apollo-mic1", "name": "Apollo MIC 1", "type": "asio-in",
+      "deviceId": "asio:Universal Audio USB ASIO", "channels": [0], "enabled": true }
+  ],
+  "destinations": [
+    { "id": "vbcable-in", "name": "VB-CABLE Input", "type": "render", "endpoint": "CABLE Input",
+      "channels": [0, 1], "enabled": true }
+  ],
+  "routes": [ { "source": "apollo-mic1", "destination": "vbcable-in", "gainDb": 0 } ]
+}
+"@
+Set-Content -Path (Join-Path $portable 'PRESET_Apollo_to_VB-CABLE.json') -Value $apolloPreset -Encoding ASCII
 Write-HashList $portable (Join-Path $portable 'SHA256SUMS.txt')
 $portableZip = Join-Path $releaseDir ("NL-Audio-Matrix-$version-portable.zip")
 if (Test-Path $portableZip) { Remove-Item $portableZip -Force }
@@ -147,6 +186,56 @@ Get-ChildItem $releaseDir -File | Sort-Object Name | ForEach-Object {
 }
 Set-Content -Path (Join-Path $releaseDir 'SHA256SUMS.txt') -Value ($assetLines -join [Environment]::NewLine) -Encoding ASCII
 Copy-Item (Join-Path $stagingRoot 'BUILD_INFO.json') (Join-Path $releaseDir 'BUILD_INFO.json') -Force
+
+$notes = @"
+# NL Audio Matrix $version — pre-release (test build)
+
+Build ID: $buildId
+Commit:   $commit
+Built UTC: $builtUtc
+
+## Packages
+
+1. NL-Audio-Matrix-$version-portable.zip — user-mode only.
+   No kernel driver, certificate, devcon or installer inside. Runs on standard
+   Windows 10/11 x64 with the devices already present: an ASIO driver, VB-CABLE,
+   or the NL Mic/Return endpoints if the full package is installed. Includes
+   PRESET_Apollo_to_VB-CABLE.json (Universal Audio USB ASIO MIC 1 -> CABLE Input)
+   and README.txt with the steps.
+
+2. NL-Audio-Matrix-$version-VM-Setup.exe — full NL installer:
+   application + engine + NL virtual driver + repair/upgrade/uninstall.
+   The driver is test-signed: it needs Windows test signing. Intended for the
+   test VM or a dedicated test PC. Setup is read-only until you run it and it
+   never enables test signing unless you pass /accept-testsigning explicitly;
+   it never changes Secure Boot or other third-party drivers.
+
+## Driver state and diagnostics
+
+Run NL-Audio-Matrix-$version-VM-Setup.exe --mode diagnose to get, without
+changing anything: driver absent/present/outdated/current/damaged decision,
+INF DriverVer, packaged signature vs embedded certificate, certificate trust,
+staged packages, endpoints count, test-signing and Secure Boot state.
+
+## Status
+
+Pre-release. A21 (return-path loopback frequency accuracy) and A22 (capture
+path stability with concurrent clients) are open defects, so this build is not
+Stable and must not be promoted to Stable until they are closed.
+
+## Apollo manual test (authorized by the owner, not automated)
+
+Portable: install/keep VB-CABLE, run NLMatrixUI.exe, load
+PRESET_Apollo_to_VB-CABLE.json, press Apply/Start, select "CABLE Output" as the
+microphone in the browser, check Diagnostics meters/rate/buffer, then stop.
+UAD Console and Windows defaults are not modified by NL Audio Matrix.
+
+## Integrity
+
+SHA256SUMS.txt lists every asset in this folder; BUILD_INFO.json carries the
+Build ID, commit and component hashes.
+"@
+Set-Content -Path (Join-Path $releaseDir 'RELEASE_NOTES.md') -Value $notes -Encoding UTF8
 
 Write-Host ("Release directory: " + $releaseDir)
 Get-ChildItem $releaseDir -File | Select-Object Name,Length | Format-Table -AutoSize
