@@ -604,7 +604,7 @@ internal static class Installer
             EnsureEntries(options, payloadVersion, state, log, repairs);
 
             log.Step("Verifying the eight NL audio endpoints");
-            var endpoints = NlEndpoints.WaitFor(log, rebootRequired ? 5000 : 25000);
+            var endpoints = NlEndpoints.WaitFor(log, rebootRequired ? 5000 : 45000);
             if (endpoints.ActiveCount == 0)
             {
                 if (rebootRequired)

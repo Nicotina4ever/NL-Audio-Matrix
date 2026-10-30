@@ -1403,9 +1403,19 @@ internal static class NlEndpoints
 
     public static EndpointReport WaitFor(SetupLog log, int timeoutMs)
     {
+        // Wait until every expected endpoint is active, not just one per direction:
+        // a fresh driver install enumerates the eight endpoints over a few seconds.
+        int expectedCapture = 0;
+        int expectedRender = 0;
+        foreach (var name in NlConst.ExpectedEndpointNames)
+        {
+            if (name.StartsWith("NL Mic", StringComparison.OrdinalIgnoreCase)) expectedCapture++;
+            else expectedRender++;
+        }
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
         EndpointReport report = Collect(log);
-        while (DateTime.UtcNow < deadline && (report.ActiveCapture == 0 || report.ActiveRender == 0))
+        while (DateTime.UtcNow < deadline
+               && (report.ActiveCapture < expectedCapture || report.ActiveRender < expectedRender))
         {
             Thread.Sleep(1000);
             report = Collect(log);

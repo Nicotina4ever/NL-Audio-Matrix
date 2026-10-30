@@ -280,7 +280,7 @@ internal sealed class SetupWizard : Form
         var card = new Panel
         {
             Location = new Point(40, 122),
-            Size = new Size(604, 130),
+            Size = new Size(604, 144),
             BackColor = CardColor,
             BorderStyle = BorderStyle.FixedSingle
         };
@@ -305,7 +305,7 @@ internal sealed class SetupWizard : Form
         {
             Text = "",
             Location = new Point(14, 56),
-            Size = new Size(576, 64)
+            Size = new Size(576, 80)
         };
         card.Controls.Add(lblState);
 
