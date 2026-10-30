@@ -1,4 +1,4 @@
-﻿#include "wasapi_loopback.h"
+#include "wasapi_loopback.h"
 
 #include <windows.h>
 #include <mmdeviceapi.h>
@@ -108,6 +108,7 @@ struct WasapiLoopbackCapture::Impl
     bool isFloat = false;
     bool isPcm = false;
     std::string error;
+    std::wstring resolvedName;
 
     void run();
     bool convertPacket (const BYTE* data, UINT32 frames, DWORD flags);
@@ -169,6 +170,7 @@ bool WasapiLoopbackCapture::start (const std::wstring& endpointName, Sink sink, 
     }
 
     impl->device = selected;
+    impl->resolvedName = getFriendlyName (impl->device.Get());
     if (FAILED (impl->device->Activate (__uuidof (IAudioClient), CLSCTX_ALL, nullptr, &impl->client)))
     {
         error = "IAudioClient activation failed";
@@ -358,3 +360,8 @@ void WasapiLoopbackCapture::stop()
 double WasapiLoopbackCapture::getSampleRate() const { return impl != nullptr ? impl->sampleRate : 0.0; }
 int WasapiLoopbackCapture::getChannelCount() const { return impl != nullptr ? impl->channelCount : 0; }
 bool WasapiLoopbackCapture::isRunning() const { return impl != nullptr && impl->running.load(); }
+
+std::wstring WasapiLoopbackCapture::getEndpointName() const
+{
+    return impl != nullptr ? impl->resolvedName : std::wstring();
+}

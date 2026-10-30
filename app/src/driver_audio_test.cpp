@@ -60,25 +60,28 @@ namespace
                                                const juce::AudioIODeviceCallbackContext&) override
         {
             for (int ch = 0; ch < numOutputs; ++ch)
-            {
-                if (output[ch] == nullptr) continue;
-                for (int i = 0; i < numSamples; ++i)
-                {
-                    output[ch][i] = (float) (0.35 * std::sin (phase));
-                    phase += 2.0 * 3.14159265358979323846 * frequency / sampleRate;
-                    if (phase > 2.0 * 3.14159265358979323846) phase -= 2.0 * 3.14159265358979323846;
-                }
-            }
+                if (output[ch] != nullptr)
+                    for (int i = 0; i < numSamples; ++i)
+                        output[ch][i] = (float) (0.35 * std::sin (phase + step * i));
+
+            // Advance the oscillator once per frame, never once per channel.
+            phase += step * numSamples;
+            while (phase > 2.0 * 3.14159265358979323846)
+                phase -= 2.0 * 3.14159265358979323846;
+            while (phase < 0.0)
+                phase += 2.0 * 3.14159265358979323846;
         }
         void audioDeviceAboutToStart (juce::AudioIODevice* d) override
         {
             sampleRate = d != nullptr ? d->getCurrentSampleRate() : 48000.0;
             if (sampleRate <= 0.0) sampleRate = 48000.0;
+            step = 2.0 * 3.14159265358979323846 * frequency / sampleRate;
         }
         void audioDeviceStopped() override {}
 
         double frequency = 440.0;
         double phase = 0.0;
+        double step = 2.0 * 3.14159265358979323846 * 440.0 / 48000.0;
         double sampleRate = 48000.0;
     };
 

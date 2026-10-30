@@ -1,4 +1,4 @@
-﻿#include <sysvad.h>
+#include <sysvad.h>
 #include <limits.h>
 #include <ks.h>
 #include "simple.h"
@@ -318,6 +318,12 @@ Return Value:
 
     // Publish the negotiated endpoint format to the NLMatrix transport.
     NlTransportSetFormat(m_bCapture, m_pMiniport->GetNlEndpointIndex(), &m_pWfExt->Format);
+    if (m_pMiniport->IsLoopbackPin(Pin_))
+    {
+        // A new loopback listener is a new tap: start from the live edge so it
+        // never receives audio left over from a previous playback session.
+        NlTransportResetRenderTap(m_pMiniport->GetNlEndpointIndex());
+    }
 
     m_pbMuted = (PBOOL)ExAllocatePool2(POOL_FLAG_NON_PAGED, m_pWfExt->Format.nChannels * sizeof(BOOL), MINWAVERTSTREAM_POOLTAG);
     if (m_pbMuted == NULL)

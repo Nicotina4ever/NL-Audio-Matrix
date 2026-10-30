@@ -391,3 +391,30 @@ evidenze `reports/engine/**`, binari `vm/baseline/*`.
   recurrence error). Evidence: `vm/async_loop_mic1.wav`,
   `vm/async_loop_router.err.log`.
 .
+
+## Incremento 2026-10-30 01:15 — A21 sospeso, correzioni preservate
+
+Indagine A21 interrotta su richiesta (consumo risorse); A21 resta **aperto** e non blocca lo
+sviluppo. Correzioni reali gia' fatte e conservate:
+
+- **Test client** `NLMatrixDriverAudioTest --play`: la fase dell'oscillatore avanzava una
+  volta per canale per campione, producendo salti di fase a ogni buffer (il tono 1040 Hz
+  mostrava righe spurie a 980/1080 Hz e la lettura "1079.7 Hz"). Ora un solo incremento per
+  frame, uguale su tutti i canali.
+- **Driver loopback** (`nltransport.cpp`): il pin loopback leggeva il render ring dal cursore
+  di lettura, che avanza solo in overrun; riproduceva quindi audio vecchio e faceva scorrere
+  la finestra a scatti (l'errore di frequenza vero e proprio). Ora il tap ha un cursore
+  consumatore proprio; alla creazione del pin loopback il tap viene azzerato
+  (`NlTransportResetRenderTap`) per non ereditare la coda della sessione precedente.
+- Diagnostica: il router logga endpoint e formato risolti per ogni source loopback
+  (`WasapiLoopbackCapture::getEndpointName`).
+
+Stato VM: driver ricostruito e reinstallato (DriverVer `10/30/2026,0.38.34.360`) + reboot.
+Evidenza sintetica gia' raccolta: matrice 4x4 tono su NL Return N -> NL Mic N con frequenze
+nominali esatte e nessuna diafonia; loopback standalone di Return 2 = 1040.0 Hz.
+
+**Aperto (A22)**: con piu' client contemporanei (router + piu' ffmpeg/loopback) la cattura
+NL Mic puo' consegnare silenzio o frame spuri; `Run-EndpointAudioVerification.ps1` fallisce
+in quel contesto. Da riprendere con test deterministici e un solo client per endpoint.
+
+Prossimo lavoro: funzionalita' Quick Connect in GUI, routing bidirezionale, mixer/Studio.

@@ -30,6 +30,12 @@ typedef struct _NL_TRANSPORT_ENDPOINT
     KSPIN_LOCK Lock;
     NL_RING Render;
     NL_RING Capture;
+    // Live loopback tap cursor.  The loopback pin is a consumer of the render
+    // ring that must not reuse bytes the previous pull already delivered, or
+    // the application hears the same stale window (and, once the ring is
+    // full, an arbitrary sliding window) forever.
+    ULONG LoopbackRead;
+    BOOLEAN LoopbackValid;
     NLMATRIX_ENDPOINT_INFO Info;
 } NL_TRANSPORT_ENDPOINT;
 
@@ -205,9 +211,31 @@ VOID NlTransportReset()
         KeAcquireSpinLock (&g_Transport.Endpoints[index].Lock, &OldIrql);
         NlRingReset (&g_Transport.Endpoints[index].Render);
         NlRingReset (&g_Transport.Endpoints[index].Capture);
+        g_Transport.Endpoints[index].LoopbackRead = 0;
+        g_Transport.Endpoints[index].LoopbackValid = FALSE;
         g_Transport.Endpoints[index].Info.CaptureUsedBytes = 0;
         KeReleaseSpinLock (&g_Transport.Endpoints[index].Lock, OldIrql);
     }
+}
+
+VOID NlTransportResetRenderTap (_In_ ULONG EndpointIndex)
+{
+    if (! g_Transport.Initialized)
+        return;
+
+    auto& endpoint = g_Transport.Endpoints[NlClampEndpoint (EndpointIndex)];
+    KIRQL OldIrql;
+    KeAcquireSpinLock (&endpoint.Lock, &OldIrql);
+    // A newly attached loopback listener must start from a clean edge: the
+    // render ring may still hold audio from a previous playback session, and
+    // replaying that tail to the new listener is indistinguishable from live
+    // audio.
+    NlRingReset (&endpoint.Render);
+    endpoint.LoopbackRead = 0;
+    endpoint.LoopbackValid = FALSE;
+    endpoint.Info.RenderBytesPushed = 0;
+    endpoint.Info.RenderOverrunBytes = 0;
+    KeReleaseSpinLock (&endpoint.Lock, OldIrql);
 }
 
 VOID NlTransportSetFormat (_In_ BOOLEAN Capture, _In_ ULONG EndpointIndex,
@@ -218,6 +246,13 @@ VOID NlTransportSetFormat (_In_ BOOLEAN Capture, _In_ ULONG EndpointIndex,
     KeAcquireSpinLock (&endpoint.Lock, &OldIrql);
     NlSetStreamInfo (Capture ? &endpoint.Info.Capture : &endpoint.Info.Render, Format);
     NlRingReset (Capture ? &endpoint.Capture : &endpoint.Render);
+    if (! Capture)
+    {
+        // A new render stream starts a new timeline: drop the tap cursor so the
+        // loopback resumes from the first genuinely new sample.
+        endpoint.LoopbackRead = 0;
+        endpoint.LoopbackValid = FALSE;
+    }
     if (Capture)
     {
         // Recompute the byte target from the live format; the ring was just
@@ -271,11 +306,44 @@ VOID NlTransportPeekRender (_In_ ULONG EndpointIndex,
     RtlZeroMemory (Destination, Bytes);
     if (endpoint.Render.Buffer != NULL && endpoint.Render.Capacity > 0 && endpoint.Render.Used > 0)
     {
-        const ULONG copy = min (Bytes, endpoint.Render.Used);
-        const ULONG first = min (copy, endpoint.Render.Capacity - endpoint.Render.Read);
-        RtlCopyMemory (Destination, endpoint.Render.Buffer + endpoint.Render.Read, first);
-        if (copy > first)
-            RtlCopyMemory (Destination + first, endpoint.Render.Buffer, copy - first);
+        // The loopback pin is a real-time consumer of the render stream, not a
+        // peeking reader: every pull must continue exactly after the bytes the
+        // previous pull delivered.  Reading from the ring's read cursor
+        // (advanced only on overrun) replayed stale audio and then slid the
+        // window forward in arbitrary steps, which made the loopback appear to
+        // run at a different frequency.  Reusing the newest window instead
+        // keeps replaying the same stale bytes once rendering stops, so the
+        // cursor is required for both correct pitch and correct silence.
+        const ULONG Capacity = endpoint.Render.Capacity;
+        if (! endpoint.LoopbackValid)
+        {
+            // Start live: the first pull only delivers audio rendered from now
+            // on, never the tail of the previous stream.
+            endpoint.LoopbackRead = endpoint.Render.Write;
+            endpoint.LoopbackValid = TRUE;
+        }
+
+        // The window still retained by the ring is [Read, Read + Used).  If
+        // the tap fell behind it (writer outran the pin through an overrun),
+        // resynchronise on the oldest retained byte so the two stay aligned.
+        const ULONG RetainedFromRead = (endpoint.LoopbackRead + Capacity - endpoint.Render.Read)
+                                       % Capacity;
+        if (RetainedFromRead > endpoint.Render.Used)
+            endpoint.LoopbackRead = endpoint.Render.Read;
+
+        const ULONG Available = (endpoint.Render.Write + Capacity - endpoint.LoopbackRead)
+                                % Capacity;
+        const ULONG copy = min (Bytes, Available);
+        if (copy > 0)
+        {
+            // End-align the payload: the pin's block covers [now - Bytes, now].
+            BYTE* output = Destination + (Bytes - copy);
+            const ULONG first = min (copy, Capacity - endpoint.LoopbackRead);
+            RtlCopyMemory (output, endpoint.Render.Buffer + endpoint.LoopbackRead, first);
+            if (copy > first)
+                RtlCopyMemory (output + first, endpoint.Render.Buffer, copy - first);
+            endpoint.LoopbackRead = (endpoint.LoopbackRead + copy) % Capacity;
+        }
     }
     KeReleaseSpinLock (&endpoint.Lock, OldIrql);
 }

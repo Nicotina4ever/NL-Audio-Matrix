@@ -2522,6 +2522,10 @@ namespace
                         rt->sampleRate.store (rt->loopback->getSampleRate(),
                                               std::memory_order_release);
                     rt->online = true;
+                    std::cout << "Source " << def.id << " loopback -> "
+                              << juce::String (rt->loopback->getEndpointName().c_str())
+                              << " (" << rt->loopback->getSampleRate() << " Hz, "
+                              << rt->loopback->getChannelCount() << " ch)\n";
                 }
                 else
                 {
@@ -3486,7 +3490,8 @@ namespace
                             failures = 0;
                             std::cout << "Source " << source->def.id
                                       << " loopback reconnected: "
-                                      << source->def.endpoint << "\n";
+                                      << juce::String (capture->getEndpointName().c_str())
+                                      << " (" << capture->getSampleRate() << " Hz)\n";
                         }
                         else if (++failures % 10 == 1)
                         {

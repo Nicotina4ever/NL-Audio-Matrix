@@ -373,3 +373,21 @@ batch intermedi, run baseline raw, probe coda, helper GUI, backup, dist alpha,
 cache oggetti build) sono state spostate in
 `da_eliminare/2026-10-27-consolidation/` senza cancellarle; la VM e le baseline
 FINAL2/FINAL3/FINAL4/FINAL5 in `vm/baseline/` non sono state toccate.
+
+## Aggiornamento 2026-10-30 01:15 — A21 sospeso (nessun nuovo test eseguito d'ora in poi)
+
+Su richiesta l'indagine A21 e' sospesa: **A21 resta aperto**, nessun altro test/analisi sui
+toni di ritorno. Stato registrato:
+
+- Corretto il generatore di tono del client di test (fase avanzata per canale -> ora per
+  frame); corretto il tap di loopback del driver (cursore consumatore proprio, azzerato alla
+  creazione del pin loopback). Driver ricostruito e reinstallato in VM con DriverVer
+  `10/30/2026,0.38.34.360` + reboot.
+- Evidenza sintetica: matrice 4x4 (tono su NL Return N -> NL Mic N) con frequenze nominali
+  esatte (1000/1040/1080/1120 Hz) e nessuna diafonia; loopback standalone di Return 2 a
+  1040.0 Hz; loopback in idle silenzioso.
+- **Non verificato/aperto (A22)**: con piu' client contemporanei la cattura NL Mic puo'
+  consegnare silenzio o dati spuri; `Run-EndpointAudioVerification.ps1` fallisce in quel
+  contesto. Nessuna chiusura di A21/A7 su questa base.
+
+Prossimo lavoro: Quick Connect in GUI, routing bidirezionale, mixer/Studio.

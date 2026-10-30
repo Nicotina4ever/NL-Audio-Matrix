@@ -43,6 +43,8 @@ public:
     double getSampleRate() const;
     int getChannelCount() const;
     bool isRunning() const;
+    /** Friendly name of the render endpoint actually resolved by start(). */
+    std::wstring getEndpointName() const;
 
 private:
     struct Impl;
