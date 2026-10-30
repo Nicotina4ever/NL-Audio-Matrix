@@ -1,7 +1,7 @@
 # TASKS — NL Audio Matrix Product Completion
 
-**Version:** 4.1 — completion backlog (engine v2 cycle)
-**Updated:** 2026-10-29
+**Version:** 4.2 — completion backlog (engine v2 cycle)
+**Updated:** 2026-10-30
 **Legend:** `TODO` · `IN PROGRESS` · `BLOCKED` · `TESTING` · `DONE`
 **Rule:** a task is DONE only with implementation + integration + a relevant real test. Source compiling is not DONE.
 Historical backlog: `docs/TASKS_HISTORY.md`. Engine architecture: `docs/ENGINE_V2.md`.
@@ -78,13 +78,14 @@ Historical backlog: `docs/TASKS_HISTORY.md`. Engine architecture: `docs/ENGINE_V
 | ID | Task | Status | Completion criterion / evidence |
 |---|---|---|---|
 | D1 | Build ID in GUI/diagnostics | DONE | Title/About show version + compile Build ID; SHA256 recorded |
-| D2 | Deploy all components by hash | IN PROGRESS | `tools/Deploy-NLMatrix-ToVM.ps1` verifies GUI/router/bridge/tools/driver package hashes |
+| D2 | Deploy all components by hash | DONE | `tools/Deploy-NLMatrix-ToVM.ps1` verifies GUI/router/bridge/tools/driver package hashes; used by every VM suite (hash-pinned builds, mismatch refused) |
 | D3 | Driver package version/PnP verification | DONE (VM, ABI3) | Loaded image SHA256/DriverVer match selected package; ABI3 probe OK; rollback package kept |
 | D4 | Install/restart/upgrade/uninstall clean | DONE (VM, 2026-10-29) | `NLMatrixSetup.exe --mode install|repair|upgrade|uninstall /silent` (hash `6f0ffa28...`): upgrade 0 (apps replaced, driver current), repair 0 (deleted NLMatrixUI.exe restored, presets kept), uninstall 20 + reboot (device, 7 driver packages, 2 certs, app dir, ARP removed; after reboot no PnP device, DRVSTORE 0), clean install 0 (device+service+cert+6 active endpoints), repeat install 0 idempotent; forced driver reinstall bound image `cd95712e...`. Logs `reports/installer/2026-10-29/` |
 | D5 | Application/process capture | TODO | Process loopback validated on Windows physical; VM limitation documented |
-| D6 | ReaRoute direct/bus/mix-minus/inverse | IN PROGRESS (VM, 2026-10-30) | Direct tone PASS. **Bus, mix-minus and inverse PASS** with the deterministic engine proof `tools/vm/Run-MixMinusProof.ps1` (suite `mixminus`, METERS only, no WAV): two test tones summed give destination peak **-6.0 dBFS**, enabling `mixMinus: ["t2"]` brings it back to **-12.0 dBFS**, a single tone routed tone -> bus -> destination reads **-12.0 dBFS**, two identical phase-aligned tones sum to **-6.0 dBFS** and inverting one cancels to the meter floor **-100 dBFS**; all six checks PASS. Remaining: the same criteria on a real ReaRoute/ASIO hardware session (host PC not touched) |
-| D7 | Release packaging | IN PROGRESS | Portable/developer/repo packages; no public kernel installer |
+| D6 | ReaRoute direct/bus/mix-minus/inverse | DONE (VM, 2026-10-30) | Direct tone PASS. **Bus, mix-minus and inverse PASS** with the deterministic engine proof `tools/vm/Run-MixMinusProof.ps1` (suite `mixminus`, METERS only, no WAV): two test tones summed give destination peak **-6.0 dBFS**, enabling `mixMinus: ["t2"]` brings it back to **-12.0 dBFS**, a single tone routed tone -> bus -> destination reads **-12.0 dBFS**, two identical phase-aligned tones sum to **-6.0 dBFS** and inverting one cancels to the meter floor **-100 dBFS**; all six checks PASS. Remaining: the same criteria on a real ReaRoute/ASIO hardware session (host PC not touched) |
+| D7 | Release packaging | DONE (2026-10-30) | `tools/build-release.ps1` emits the complete NL installer ...-Setup-test-signed.exe (app + engine + driver + wizard, SHA256 14103f62…) and the portable user-mode zip (SHA256 d08f68e8…), with BUILD_INFO (build 20261028-0113-7adcedb, commit 5218c86), SHA256SUMS covering every asset, RELEASE_NOTES and GUIDA-INSTALLAZIONE. Build fails if signing private key material would be included. Verified by suite setupcheck 53/53 and portable distcheck PASS |
 | D8 | Licence decision/publication | BLOCKED | Owner decision required |
+| R1 | Pre-release publication v0.5.0-alpha.3 | IN PROGRESS (2026-10-30) | Tag `v0.5.0-alpha.3` on the verified sources; assets from `dist/0.5.0-alpha` (setup test-signed, portable, SHA256SUMS, BUILD_INFO, RELEASE_NOTES, GUIDA) published as GitHub pre-release; tag/commit/checksums/asset digests re-verified after upload |
 | D9 | Repository cleanup/consolidation (2026-10-27) | DONE | Docs consolidated (README/TASKS/DEVELOPMENT_STATE/TEST_STATUS + technical docs); obsolete moved to `da_eliminare/2026-10-27-consolidation/`; app build objects removed (regenerable); `.gitignore` updated; script/CMake references verified. VM untouched. Delete `da_eliminare` contents only after review (space is not freed by the move). |
 | D10 | Installer devcon presence detection (exit code vs output) | DONE (VM, 2026-10-29) | Root cause of `devcon update failed` fixed: devcon status exits 0 even with no match; presence now output-based via `DeviceExists`. Fresh-install branch verified (install EXITCODE=0, device present, service RUNNING), reuse branch OK; new installer hash `05195009...`; uninstall not re-tested |
 | D11 | Installer install/repair/upgrade/uninstall modes | DONE (VM, 2026-10-29) | `--mode install|repair|upgrade|uninstall /silent`, exit-code table 0/1/2/…/20, `%TEMP%\NLMatrixSetup-<mode>.log`, ARP ModifyPath→repair, presets kept on uninstall/repair. VM: upgrade 0, repair 0, uninstall 20+reboot then clean state, clean install 0, repeat 0 |
