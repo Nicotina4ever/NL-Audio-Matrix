@@ -1,7 +1,48 @@
 # DEVELOPMENT_STATE — NL Audio Matrix
 
-**Updated:** 2026-10-30 13:05 (Europe/Rome)
+**Updated:** 2026-10-30 15:05 (Europe/Rome)
 **Objective:** complete the audio engine, real Focusrite validation and professional GUI without false PASSes.
+
+## Increment 2026-10-30 15:05 — complete NL installer (wizard, diagnostics, verification)
+
+- **Setup wizard (A30)**: `NL-Audio-Matrix-<ver>-Setup-test-signed.exe` is one file
+  with a normal Windows wizard: current-state card, install/upgrade/repair/uninstall/
+  diagnose, install folder, launch option, explicit test-signing consent, live
+  progress log, result page with log/launch/reboot, and a "Guida e requisiti" dialog
+  with the OEM/Secure Boot/HVCI instructions and consequences. CLI modes unchanged.
+- **Real driver diagnostics (A30)**: SetupAPI PnP identity (instance, hardware ID,
+  service, bound INF, problem code), loaded `.sys` path/version/size, DriverStore
+  packages with DriverVer, catalog signature (`sysvad.cat`) vs embedded test
+  certificate, Code Integrity events, Secure Boot/TESTSIGNING/HVCI/VBS/firmware/
+  blocklist, the eight endpoints with names, pending-reboot marker and the setup
+  decision. `--mode diagnose` writes `last-diagnose.json/.txt` under
+  `%ProgramData%\NL Audio Matrix\reports`.
+- **Verification (A30)**: `--mode verify` (+ `/app-selftest`) and `NLMatrixVerify.exe`
+  (asInvoker, so no UAC prompt at logon) for the RunOnce check. The app start/stop
+  test uses the run-only `--exit-on-close` flag: window shown, normal exit 0.
+- **Lifecycle safety (A30)**: upgrade keeps profiles/presets and removes only
+  obsolete NL driver packages; repair restores missing file/driver/service/endpoints;
+  duplicate NL device instances removed; uninstall removes app/driver/certificate/
+  ARP/Start Menu, keeps `%APPDATA%`, writes the pending marker and registers the
+  verifier so the next logon proves the removal. Payload/build fails if any private
+  key material would be shipped; no third-party driver or Windows audio default is
+  touched.
+- **VM verification (suite `setupcheck`, 53/53 checks PASS)**: diagnose report,
+  wizard window + screenshot, verify with app start/stop, install/repair/upgrade/
+  idempotent reinstall with one device and one package, profiles preserved, uninstall
+  (exit 20) with every artifact removed after reboot, post-reboot RunOnce verifier
+  healthy and marker cleared, clean reinstall, final verify with app start/stop.
+  Evidence `reports/setupcheck/2026-10-30-145731/`, `reports/automation/latest-summary.json`.
+- **Host preflight (A31)**: `tools/Diagnose-InstallerHost.ps1` — read-only checks of
+  OS/build/x64, administrator token, firmware, Secure Boot, TESTSIGNING, HVCI/VBS/
+  blocklist, existing NL app/driver/device/endpoints/certificate, free space and
+  pending reboot, with verdict READY/BLOCKED/NEEDS-ADMIN and the manual steps.
+  Report `reports/host-preflight/2026-10-30-current/`. Nothing is installed or changed.
+- **Distribution (A29 refresh)**: full installer renamed `...-Setup-test-signed.exe`
+  to state the signing requirement; release adds `GUIDA-INSTALLAZIONE.txt` and
+  `SHA256SUMS.txt` covering every asset. Setup SHA256 `14103f62…`, portable
+  `d08f68e8…`. Pre-release publication waits for a fresh GitHub token: the previously
+  exposed token must be revoked and was not used for this build.
 
 ## Increment 2026-10-30 13:05 — responsive mixer, installer hardening, distribution
 
