@@ -1,6 +1,6 @@
 # DEVELOPMENT_STATE — NL Audio Matrix
 
-**Updated:** 2026-10-30 15:05 (Europe/Rome)
+**Updated:** 2026-10-30 15:50 (Europe/Rome)
 **Objective:** complete the audio engine, real Focusrite validation and professional GUI without false PASSes.
 
 ## Increment 2026-10-30 15:05 — complete NL installer (wizard, diagnostics, verification)
@@ -38,6 +38,7 @@
   blocklist, existing NL app/driver/device/endpoints/certificate, free space and
   pending reboot, with verdict READY/BLOCKED/NEEDS-ADMIN and the manual steps.
   Report `reports/host-preflight/2026-10-30-current/`. Nothing is installed or changed.
+- **Published (R1)**: pre-release https://github.com/Nicotina4ever/NL-Audio-Matrix/releases/tag/v0.5.0-alpha.3 — tag `v0.5.0-alpha.3` -> commit `eb1e0f7`, 6 assets (setup `14103f62…`, portable `d08f68e8…`, SHA256SUMS, BUILD_INFO, RELEASE_NOTES, GUIDA), every asset re-downloaded and SHA256-verified; `prerelease=true`, no Stable/latest pointer. Publishing tool `tools/Publish-GitHubRelease.ps1` uses the credential git already stores and never prints it.
 - **Distribution (A29 refresh)**: full installer renamed `...-Setup-test-signed.exe`
   to state the signing requirement; release adds `GUIDA-INSTALLAZIONE.txt` and
   `SHA256SUMS.txt` covering every asset. Setup SHA256 `14103f62…`, portable
