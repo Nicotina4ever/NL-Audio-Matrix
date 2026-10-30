@@ -418,3 +418,24 @@ NL Mic puo' consegnare silenzio o frame spuri; `Run-EndpointAudioVerification.ps
 in quel contesto. Da riprendere con test deterministici e un solo client per endpoint.
 
 Prossimo lavoro: funzionalita' Quick Connect in GUI, routing bidirezionale, mixer/Studio.
+
+## Incremento 2026-10-30 11:20 — Test coordinator async, GUI modulare, ciclo di vita motore
+
+- **Coordinatore test** `tools/Run-TestSuite.ps1` (nuovo, usa gli harness esistenti): avvio
+  detached (o Task Scheduler one-shot), build hash-pinned, mutex/lock, guardia sessione audio
+  in guest, timeout con kill dell'albero, `summary.json` compatto + `latest-summary.json`,
+  log dettagliati solo quando utili, retention 5 run. Suite: smoke, guiselftest,
+  guilifecycle, quickconnect, endpoints, matrix. Verificato: smoke PASS, launcher detached
+  PASS, task Scheduler create/remove OK, guilifecycle PASS (5/5, risorse rilasciate),
+  guiselftest 67/67.
+- **GUI modulare**: patchbay centrale invariato; barra formati ASIO spostata nella sezione
+  "Dispositivi" (nascosta di default, persistita); strip sezioni Routing/Mixer/Quick Connect/
+  Devices/Diagnostics; barra di stato compatta con stato reale del motore (Starting/Running/
+  Degraded/Stopping/Stopped/Error), rate/buffer effettivi e apertura impostazioni.
+- **Ciclo di vita motore**: autostart predefinito ON (voce di menu), avvio solo con profilo
+  completo e almeno una rotta attiva; device non disponibile -> Error recuperabile, mai falso
+  Running; istanza GUI unica; router orfano terminato prima dell'avvio; uscita reale con stop
+  graceful e rilascio risorse; comportamento X configurabile (tray vs uscita).
+- **Quick Connect in GUI**: chip + voce menu che costruisce il progetto minimo ASIO ch1 ->
+  NL Mic 1, lo salva come ultima sessione e avvia il motore.
+- A21/A22 restano aperti e sospesi; nessuna nuova indagine sui toni.

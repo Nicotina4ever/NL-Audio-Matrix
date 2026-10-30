@@ -391,3 +391,17 @@ toni di ritorno. Stato registrato:
   contesto. Nessuna chiusura di A21/A7 su questa base.
 
 Prossimo lavoro: Quick Connect in GUI, routing bidirezionale, mixer/Studio.
+
+## Aggiornamento 2026-10-30 11:20 — automazione test locale + GUI/lifecycle (VM)
+
+Eseguiti con `tools/Run-TestSuite.ps1` (risultati sintetici, nessun polling LLM):
+
+- **smoke PASS** (run `20261030-111159-smoke`): 4 endpoint NL Mic enumerati, driver ABI3
+  4 endpoint / 4+4 filtri; build id hash-pinned `398CB2BF-C4B6F7A8-F249A35`.
+- **guiselftest PASS** (`20261030-111601-guiselftest`): GUI selftest 67/67 check.
+- **guilifecycle PASS** (`20261030-111517-guilifecycle`): 5 PASS / 0 FAIL, `resourcesReleased=true`
+  (autostart motore, minimizzazione nel tray con motore vivo, ripristino, stop su uscita con
+  rilascio ASIO/WASAPI e nessun processo NLMatrixUI/NLMatrixRouter residuo).
+- Log completi: `reports/automation/<run>/logs/`; riepilogo unico `reports/automation/latest-summary.json`.
+- GUI: nuova organizzazione modulare (patchbay centrale, sezioni on-demand, barra di stato);
+  Quick Connect disponibile dalla GUI. A21/A22 aperti/sospesi, non bloccanti.

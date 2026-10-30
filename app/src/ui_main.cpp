@@ -3329,6 +3329,60 @@ namespace
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioFormatBar)
     };
 
+    // Compact bottom status bar: real engine state, effective format and
+    // anomalies.  Clicking it opens the engine/device settings instead of
+    // keeping the whole ASIO format surface permanently on screen.
+    class EngineStatusBar final : public juce::Component
+    {
+    public:
+        std::function<void()> onClick;
+
+        void setState (juce::String state, juce::Colour colour, juce::String detail)
+        {
+            if (state == stateText && detail == detailText && colour == stateColour)
+                return;
+            stateText = std::move (state);
+            stateColour = colour;
+            detailText = std::move (detail);
+            repaint();
+        }
+
+        void paint (juce::Graphics& g) override
+        {
+            auto bounds = getLocalBounds().toFloat();
+            g.setColour (Palette::panelRaised.withAlpha (0.65f));
+            g.fillRoundedRectangle (bounds.reduced (2.0f, 2.0f), 6.0f);
+            g.setColour (Palette::outline.withAlpha (0.45f));
+            g.drawRoundedRectangle (bounds.reduced (2.0f, 2.0f), 6.0f, 1.0f);
+
+            auto area = getLocalBounds().reduced (8, 0);
+            auto pill = area.removeFromLeft (92).reduced (0, 5);
+            g.setColour (stateColour.withAlpha (0.16f));
+            g.fillRoundedRectangle (pill.toFloat(), 4.0f);
+            g.setColour (stateColour);
+            g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
+            g.drawText (stateText, pill, juce::Justification::centred, false);
+
+            g.setColour (Palette::muted);
+            g.setFont (juce::FontOptions (11.5f));
+            g.drawText (L10n::tr ("clic: impostazioni motore", "click: engine settings"),
+                        area, juce::Justification::centredRight, true);
+            g.setColour (Palette::text.withAlpha (0.85f));
+            g.drawText (detailText, area.withTrimmedRight (190), juce::Justification::centredLeft, true);
+        }
+
+        void mouseUp (const juce::MouseEvent&) override
+        {
+            if (onClick)
+                onClick();
+        }
+
+    private:
+        juce::String stateText { "Stopped" };
+        juce::String detailText;
+        juce::Colour stateColour { Palette::muted };
+    };
+
     class MainComponent final : public juce::Component, private juce::Timer
     {
     public:
@@ -3380,6 +3434,39 @@ namespace
             addAndMakeVisible (audioBar);
             audioBar.onApply = [this] { applyAudioBarSettings(); };
             audioBar.onLayoutChanged = [this] { resized(); };
+            audioBar.setVisible (false);
+
+            // Compact section strip: Routing stays the central surface, while
+            // devices/formats, mixer and diagnostics move into clearly
+            // distinguishable, on-demand sections instead of occupying the
+            // main screen permanently.
+            for (auto* chip : { &sectionRouting, &sectionMixer, &sectionQuickConnect, &sectionDevices, &sectionDiagnostics })
+            {
+                addAndMakeVisible (*chip);
+                chip->setColour (juce::TextButton::buttonColourId, Palette::panelRaised);
+                chip->setColour (juce::TextButton::buttonOnColourId, Palette::violet.withAlpha (0.35f));
+            }
+            sectionRouting.setButtonText (L10n::tr ("Routing", "Routing"));
+            sectionMixer.setButtonText (L10n::tr ("Mixer", "Mixer"));
+            sectionDevices.setButtonText (L10n::tr ("Dispositivi", "Devices"));
+            sectionDiagnostics.setButtonText (L10n::tr ("Diagnostica", "Diagnostics"));
+            sectionQuickConnect.setButtonText ("Quick Connect");
+            sectionRouting.setConnectedEdges (juce::Button::ConnectedOnLeft);
+            sectionDevices.setConnectedEdges (juce::Button::ConnectedOnRight);
+            sectionRouting.setToggleState (true, juce::dontSendNotification);
+            sectionRouting.onClick = [this]
+            {
+                sectionRouting.setToggleState (true, juce::dontSendNotification);
+                setStatus (L10n::tr ("Routing: patchbay centrale", "Routing: central patchbay"));
+            };
+            sectionMixer.onClick = [this] { openMixer(); };
+            sectionDevices.onClick = [this] { setDevicesPanelVisible (! devicesPanelVisible); };
+            sectionDiagnostics.onClick = [this] { openDiagnostics(); };
+            sectionQuickConnect.onClick = [this] { quickConnect(); };
+
+            addAndMakeVisible (statusBar);
+            statusBar.onClick = [this] { setDevicesPanelVisible (true); };
+            updateEngineStatusBar();
 
             startStop.setButtonText ("Start");
             applyButton.setButtonText ("Apply live");
@@ -5536,11 +5623,13 @@ namespace
         void resized() override
         {
             auto area = getLocalBounds().reduced (10);
-            // C16: the audio format bar sits directly under the status line so
-            // the master/extra ASIO formats and the engine buffer mode are on
-            // the main window surface, not only in Preferences.
-            const int barHeight = audioBar.getPreferredHeight();
-            auto top = area.removeFromTop (76 + barHeight);
+            // C16/G-modular: the ASIO format bar is an on-demand "Devices"
+            // section (hidden by default), while a compact section strip and a
+            // real engine status bar stay always visible.
+            statusBar.setBounds (area.removeFromBottom (26));
+            area.removeFromBottom (4);
+            const int barHeight = devicesPanelVisible ? audioBar.getPreferredHeight() : 0;
+            auto top = area.removeFromTop (76 + barHeight + 30);
             auto topRow = top.removeFromTop (36);
             const bool compact = area.getWidth() < 1200;
             profileName.setBounds (topRow.removeFromLeft (compact ? 128 : 220));
@@ -5567,6 +5656,15 @@ namespace
             statusLabel.setBounds (top.removeFromTop (32));
             top.removeFromTop (4);
             audioBar.setBounds (top.removeFromTop (barHeight));
+            if (barHeight > 0)
+                top.removeFromTop (4);
+            auto chipRow = top.removeFromTop (26);
+            const int chipWidth = compact ? 84 : 104;
+            sectionRouting.setBounds (chipRow.removeFromLeft (chipWidth));
+            sectionMixer.setBounds (chipRow.removeFromLeft (chipWidth));
+            sectionQuickConnect.setBounds (chipRow.removeFromLeft (chipWidth + 22));
+            sectionDevices.setBounds (chipRow.removeFromLeft (chipWidth));
+            sectionDiagnostics.setBounds (chipRow.removeFromLeft (chipWidth + 4));
 
             if (mixerVisible)
             {
@@ -5887,7 +5985,18 @@ namespace
                     sourcesCollapsed = (bool) ui->getProperty ("sourcesCollapsed");
                     destinationsCollapsed = (bool) ui->getProperty ("destinationsCollapsed");
                     busesCollapsed = (bool) ui->getProperty ("busesCollapsed");
+                    // Modular surface (new keys; defaults keep the patchbay
+                    // clean and the engine autostarting, as requested).
+                    if (ui->hasProperty ("devicesPanelVisible"))
+                        devicesPanelVisible = (bool) ui->getProperty ("devicesPanelVisible");
+                    if (ui->hasProperty ("engineAutostart"))
+                        engineAutostart = (bool) ui->getProperty ("engineAutostart");
+                    if (ui->hasProperty ("exitOnClose"))
+                        exitOnClose = (bool) ui->getProperty ("exitOnClose");
                 }
+                audioBar.setVisible (devicesPanelVisible);
+                sectionDevices.setToggleState (devicesPanelVisible, juce::dontSendNotification);
+                updateEngineStatusBar();
             }
         }
 
@@ -5922,6 +6031,9 @@ namespace
                 ui->setProperty ("sourcesCollapsed", sourcesCollapsed);
                 ui->setProperty ("destinationsCollapsed", destinationsCollapsed);
                 ui->setProperty ("busesCollapsed", busesCollapsed);
+                ui->setProperty ("devicesPanelVisible", devicesPanelVisible);
+                ui->setProperty ("engineAutostart", engineAutostart);
+                ui->setProperty ("exitOnClose", exitOnClose);
                 o->setProperty ("ui", juce::var (ui));
             }
             preferencesFile().replaceWithText (juce::JSON::toString (rootVar, true));
@@ -6510,17 +6622,69 @@ namespace
         {
             if (! sessionPersistenceEnabled) return;
             const auto file = lastSessionProfileFile();
-            if (! file.existsAsFile()) return;
+            if (! file.existsAsFile())
+            {
+                setStatus (L10n::tr ("Nessun profilo valido: motore fermo",
+                                     "No valid profile: engine stopped"));
+                updateEngineStatusBar();
+                return;
+            }
             stopRouter();
             juce::String error;
             if (readProfile (file, error))
             {
                 refreshAll();
                 setStatus (L10n::tr ("Ultima sessione ripristinata", "Restored last session profile"));
+                // Autostart (default on, user-configurable): only a complete
+                // profile with at least one enabled route may start the engine.
+                if (engineAutostart && hasRunnableProfile())
+                    startRouter();
+                else if (! hasRunnableProfile())
+                    setStatus (L10n::tr ("Profilo incompleto: motore non avviato",
+                                         "Incomplete profile: engine not started"));
+                updateEngineStatusBar();
             }
         }
 
         void setSessionPersistenceEnabled (bool enabled) { sessionPersistenceEnabled = enabled; }
+        // Lifecycle preferences exposed to the menu bar (and therefore to the
+        // user) without adding another settings surface.
+        bool isEngineAutostartEnabled() const { return engineAutostart; }
+        void setEngineAutostart (bool enabled)
+        {
+            engineAutostart = enabled;
+            savePreferences();
+            setStatus (enabled ? L10n::tr ("Avvio automatico del motore attivo",
+                                           "Engine autostart enabled")
+                               : L10n::tr ("Avvio automatico del motore disattivato",
+                                           "Engine autostart disabled"));
+        }
+        void setStatusText (const juce::String& text) { setStatus (text); }
+        // Called by the application object on a real exit: persist the session,
+        // then release ASIO/WASAPI resources through the graceful stop path.
+        void prepareForApplicationExit()
+        {
+            saveLastSessionProfile();
+            stopEngineForExit();
+        }
+
+        void autostartEngineIfConfigured()
+        {
+            if (engineAutostart && hasRunnableProfile())
+                startRouter();
+            else
+                updateEngineStatusBar();
+        }
+        bool isExitOnCloseEnabled() const { return exitOnClose; }
+        void setExitOnClose (bool enabled)
+        {
+            exitOnClose = enabled;
+            savePreferences();
+            setStatus (enabled ? L10n::tr ("La X chiude l'applicazione",
+                                           "Close button exits the application")
+                               : L10n::tr ("La X minimizza nel tray",
+                                           "Close button minimises to the tray"));
+        }
         void restoreLastLayoutOnStartup() { restoreLastLayout(); }
         void saveLastLayoutOnClose() { saveLastLayout(); }
 
@@ -6724,10 +6888,13 @@ namespace
                     if (auto* app = juce::JUCEApplication::getInstance())
                         app->systemRequestedQuit();
                     break;
+                case 1006: setEngineAutostart (! engineAutostart); break;
+                case 1007: setExitOnClose (! exitOnClose); break;
                 case 2001: addNodeFromCanvas ("source"); break;
                 case 2002: addNodeFromCanvas ("destination"); break;
                 case 2003: addNodeFromCanvas ("bus"); break;
                 case 2004: toggleRouter(); break;
+                case 2006: quickConnect(); break;
                 case 2005: applyProfile(); break;
                 case 3001: refreshDevices(); refreshAll(); break;
                 case 3002: showVirtualDevices(); break;
@@ -7003,6 +7170,137 @@ namespace
         {
             statusLabel.setText (text, juce::dontSendNotification);
         }
+
+        // ---- Section surface + engine status ---------------------------------
+        void setDevicesPanelVisible (bool visible)
+        {
+            devicesPanelVisible = visible;
+            audioBar.setVisible (visible);
+            sectionDevices.setToggleState (visible, juce::dontSendNotification);
+            savePreferences();
+            resized();
+            updateEngineStatusBar();
+        }
+
+        bool hasRunnableProfile() const
+        {
+            return ! destinations.empty()
+                && std::any_of (routes.begin(), routes.end(), [] (const Route& r) { return r.enabled; });
+        }
+
+        void updateEngineStatusBar()
+        {
+            const bool running = router != nullptr && router->isRunning();
+            const double now = juce::Time::getMillisecondCounterHiRes();
+            const double meterAgeSec = lastEngineMeterMs > 0.0 ? (now - lastEngineMeterMs) / 1000.0 : 1.0e9;
+
+            juce::String state = "Stopped";
+            juce::Colour colour = Palette::muted;
+            if (engineQuitting)
+            {
+                state = "Stopping"; colour = Palette::warning;
+            }
+            else if (running)
+            {
+                if (lastEngineMeterMs <= 0.0)
+                {
+                    state = "Starting"; colour = Palette::cyan;
+                }
+                else if (! engineHealthy || meterAgeSec > 5.0 || lastCallbackAgeMs > 500.0)
+                {
+                    state = "Degraded"; colour = Palette::warning;
+                }
+                else
+                {
+                    state = "Running"; colour = Palette::success;
+                }
+            }
+            else if (engineLastError.isNotEmpty())
+            {
+                state = "Error"; colour = Palette::danger;
+            }
+            else if (idleStopped)
+            {
+                state = "Stopped"; colour = Palette::muted;
+            }
+
+            juce::String detail;
+            if (engineRate > 0.0)
+                detail << juce::String (engineRate, 0) << " Hz";
+            if (engineBuffer > 0 && engineRate > 0.0)
+                detail << "  ·  " << juce::String (engineBuffer) << " smp ("
+                       << juce::String (1000.0 * engineBuffer / engineRate, 1) << " ms)";
+            if (state == "Error")
+                detail << (detail.isNotEmpty() ? "  ·  " : "") << engineLastError;
+            else if (! running && engineLastError.isEmpty())
+                detail << (detail.isNotEmpty() ? "  ·  " : "")
+                       << (hasRunnableProfile() ? L10n::tr ("profilo pronto", "profile ready")
+                                                : L10n::tr ("nessun profilo valido", "no valid profile"));
+
+            engineStateText = state;
+            engineStateColour = colour;
+            statusBar.setState (state, colour, detail);
+        }
+
+        void killStrayRouterProcesses()
+        {
+           #if JUCE_WINDOWS
+            // A crashed or orphaned router from a previous GUI session must not
+            // keep the audio devices open: only one router may own the devices.
+            HANDLE snapshot = CreateToolhelp32Snapshot (TH32CS_SNAPPROCESS, 0);
+            if (snapshot == INVALID_HANDLE_VALUE)
+                return;
+            PROCESSENTRY32W entry {};
+            entry.dwSize = sizeof (entry);
+            if (Process32FirstW (snapshot, &entry))
+            {
+                do
+                {
+                    if (juce::String (entry.szExeFile).equalsIgnoreCase ("NLMatrixRouter.exe"))
+                    {
+                        if (HANDLE h = OpenProcess (PROCESS_TERMINATE, FALSE, entry.th32ProcessID))
+                        {
+                            TerminateProcess (h, 0);
+                            CloseHandle (h);
+                            logLine ("terminated stray NLMatrixRouter pid " + juce::String ((int) entry.th32ProcessID));
+                        }
+                    }
+                } while (Process32NextW (snapshot, &entry));
+            }
+            CloseHandle (snapshot);
+           #endif
+        }
+
+        // Controlled stop used when the application really exits (tray Exit,
+        // File > Exit).  It reuses the router's graceful stop channel and only
+        // falls back to termination when the router does not honour it.
+        void stopEngineForExit()
+        {
+            engineQuitting = true;
+            if (router != nullptr && router->isRunning())
+            {
+                if (routerControlFile.existsAsFile())
+                    routerControlFile.replaceWithText ("stop");
+                const auto deadline = juce::Time::getMillisecondCounterHiRes() + 2500.0;
+                while (router->isRunning()
+                       && juce::Time::getMillisecondCounterHiRes() < deadline)
+                {
+                    juce::Thread::sleep (25);
+                }
+                if (router->isRunning())
+                    stopRouterGracefully();
+            }
+            if (router != nullptr)
+            {
+                joinRouterReader();
+                router.reset();
+            }
+            resetEngineTelemetry();
+            engineQuitting = false;
+            updateEngineStatusBar();
+        }
+
+
 
         juce::String displayChannels (const std::vector<int>& channels) const
         {
@@ -8522,19 +8820,29 @@ namespace
                 router.reset();
             }
             idleStopped = false;
+            engineLastError.clear();
+            // Only one router may own the audio devices: a leftover from a
+            // crashed session is terminated before starting a new engine.
+            killStrayRouterProcesses();
+            updateEngineStatusBar();
 
             const auto temp = profileTempFile();
             juce::String error;
             if (! writeProfile (temp, error))
             {
+                engineLastError = error;
                 setStatus (error);
+                updateEngineStatusBar();
                 return;
             }
 
             const auto exe = routerExecutable();
             if (! exe.existsAsFile())
             {
+                engineLastError = L10n::tr ("NLMatrixRouter.exe non trovato",
+                                            "NLMatrixRouter.exe not found");
                 setStatus (L10n::tr ("NLMatrixRouter.exe non trovato in ", "NLMatrixRouter.exe not found at ") + exe.getFullPathName());
+                updateEngineStatusBar();
                 return;
             }
 
@@ -8544,7 +8852,9 @@ namespace
             juce::String profileError;
             if (! saveLiveProfile (profileError))
             {
+                engineLastError = profileError;
                 setStatus (L10n::tr ("Impossibile preparare il profilo del router: ", "Cannot prepare router profile: ") + profileError);
+                updateEngineStatusBar();
                 return;
             }
             args.add ("--config");
@@ -8570,12 +8880,16 @@ namespace
             logLine ("start " + exe.getFullPathName() + " --config " + temp.getFullPathName());
             if (! router->start (args, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
             {
+                engineLastError = L10n::tr ("Impossibile avviare il motore audio",
+                                            "Could not start the audio engine");
                 setStatus (L10n::tr ("Impossibile avviare NLMatrixRouter: ", "Could not start NLMatrixRouter: ") + exe.getFullPathName());
                 logLine ("start failed");
                 router.reset();
+                updateEngineStatusBar();
                 return;
             }
             logLine ("started");
+            updateEngineStatusBar();
 
             routerOutputBuffer.clear();
             routerReaderStop.store (false);
@@ -8627,6 +8941,7 @@ namespace
         {
             if (router != nullptr)
                 stopRouterGracefully();
+            engineLastError.clear();
             runningTopologyKey.clear();
             meterStates.clear();
             resetEngineTelemetry();
@@ -8648,6 +8963,59 @@ namespace
         }
 
         bool sessionPersistenceEnabled = true;
+
+        // Quick Connect: the user-facing, OBS-free path requested for everyday
+        // sessions.  It builds the smallest runnable project (one ASIO input
+        // channel -> NL Mic 1), applies it and starts the engine.  No profile
+        // is invented silently: this is an explicit user action.
+        void quickConnect()
+        {
+            if (asioBox.getText().trim().isEmpty())
+            {
+                setStatus (L10n::tr ("Quick Connect: seleziona prima il driver ASIO principale",
+                                     "Quick Connect: select the master ASIO driver first"));
+                return;
+            }
+
+            sources.clear();
+            destinations.clear();
+            buses.clear();
+            routes.clear();
+
+            Source src;
+            src.id = "qc-src";
+            src.name = L10n::tr ("Quick Connect", "Quick Connect");
+            src.type = "asio-in";
+            src.channels = { 0 };
+            src.x = 120.0f;
+            src.y = 220.0f;
+            sources.push_back (src);
+
+            Destination dst;
+            dst.id = "qc-dst";
+            dst.name = "NL Mic 1";
+            dst.type = "driver";
+            dst.driverEndpoint = 0;
+            dst.channels = { 0 };
+            dst.x = 640.0f;
+            dst.y = 220.0f;
+            destinations.push_back (dst);
+
+            Route route;
+            route.sourceId = src.id;
+            route.destinationId = dst.id;
+            routes.push_back (route);
+
+            profileName.setText ("Quick Connect");
+            patchbay.clearSelection();
+            refreshAll();
+            saveLastSessionProfile();
+            if (router == nullptr || ! router->isRunning())
+                startRouter();
+            setStatus (L10n::tr ("Quick Connect: ASIO canale 1 -> NL Mic 1, motore in avvio",
+                                 "Quick Connect: ASIO channel 1 -> NL Mic 1, engine starting"));
+            updateEngineStatusBar();
+        }
 
         void applyProfile()
         {
@@ -8700,6 +9068,7 @@ namespace
 
         void timerCallback() override
         {
+            updateEngineStatusBar();
             // C9: while the Theme is "System", follow the Windows light/dark
             // setting live.  This only polls the registry on the existing UI
             // timer; the audio/meter path is untouched.
@@ -8827,11 +9196,19 @@ namespace
                     message << L10n::utf8 (" — ") << detail;
                 logLine (message);
                 setStatus (message);
+                // A controllable exit (0, or a stop requested by us) is not an
+                // error; anything else is a recoverable engine error the user
+                // must see, never a false "Running".
+                if (exitCode != 0 && ! engineQuitting)
+                    engineLastError = message;
+                else
+                    engineLastError.clear();
                 startStop.setButtonText (L10n::tr ("Avvia"));
                 meterStates.clear();
                 resetEngineTelemetry();
                 metersPanel.setRows ({});
                 router.reset();
+                updateEngineStatusBar();
             }
         }
 
@@ -9053,6 +9430,18 @@ namespace
         std::map<juce::String, MeterState> meterStates;
         juce::StringArray recentRouterLines;
 
+        // Modular surface: patchbay central, on-demand sections and a compact
+        // engine status bar (see EngineStatusBar).
+        EngineStatusBar statusBar;
+        juce::TextButton sectionRouting, sectionMixer, sectionDevices, sectionDiagnostics, sectionQuickConnect;
+        bool devicesPanelVisible = false;
+        bool engineAutostart = true;
+        bool exitOnClose = false;
+        bool engineQuitting = false;
+        juce::String engineStateText { "Stopped" };
+        juce::Colour engineStateColour { Palette::muted };
+        juce::String engineLastError;
+
         NeonLookAndFeel lookAndFeel;
         // C16: main-window audio format bar (master + extra ASIO rows, engine
         // buffer mode).  Declared before the panels so it is constructed first.
@@ -9180,6 +9569,12 @@ namespace
                 menu.addItem (1002, L10n::tr ("Apri profilo..."));
                 menu.addItem (1003, L10n::tr ("Salva profilo..."));
                 menu.addSeparator();
+                auto* menuContent = getMainComponent();
+                menu.addItem (1006, L10n::tr ("Avvio automatico del motore"),
+                              true, menuContent != nullptr && menuContent->isEngineAutostartEnabled());
+                menu.addItem (1007, L10n::tr ("La X chiude l'applicazione"),
+                              true, menuContent != nullptr && menuContent->isExitOnCloseEnabled());
+                menu.addSeparator();
                 menu.addItem (1005, L10n::tr ("Esci"));
             }
             else if (topLevelMenuIndex == 1)
@@ -9187,6 +9582,7 @@ namespace
                 menu.addItem (2001, L10n::tr ("Aggiungi sorgente"));
                 menu.addItem (2002, L10n::tr ("Aggiungi destinazione"));
                 menu.addItem (2003, L10n::tr ("Aggiungi bus"));
+                menu.addItem (2006, "Quick Connect (ASIO -> NL Mic)");
                 menu.addSeparator();
                 menu.addItem (2004, L10n::tr ("Avvia / ferma motore"));
                 menu.addItem (2005, L10n::tr ("Applica live"));
@@ -9447,6 +9843,48 @@ namespace
             juce::JUCEApplication::getInstance()->systemRequestedQuit();
         }
 
+        // Deterministic lifecycle verification used by the local test
+        // coordinator: autostart, tray minimise keeping the engine alive,
+        // restore and the real-exit path releasing ASIO/WASAPI resources.
+        void runLifecycleTest()
+        {
+            const auto file = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                  .getChildFile ("nlmatrix_lifecycle.log");
+            file.deleteFile();
+            const auto log = [file] (const juce::String& line)
+            {
+                file.appendText (line + "\n");
+            };
+            log ("NL Audio Matrix lifecycle test");
+            auto* main = getMainComponent();
+            if (main == nullptr)
+            {
+                log ("FAIL no MainComponent");
+                return;
+            }
+            main->startEngine();
+            int waited = 0;
+            while (! main->isEngineRunning() && waited < 8000)
+            {
+                juce::Thread::sleep (50);
+                waited += 50;
+            }
+            log ((main->isEngineRunning() ? "PASS " : "FAIL ") + juce::String ("engine autostart"));
+            setVisible (false);
+            juce::Thread::sleep (300);
+            log ((! isVisible() ? "PASS " : "FAIL ") + juce::String ("minimise to tray"));
+            log ((main->isEngineRunning() ? "PASS " : "FAIL ") + juce::String ("engine alive in tray"));
+            setVisible (true);
+            log ((isVisible() ? "PASS " : "FAIL ") + juce::String ("restore from tray"));
+            // The real-exit path: persist + graceful stop + resource release.
+            main->prepareForApplicationExit();
+            juce::Thread::sleep (300);
+            log ((! main->isEngineRunning() ? "PASS " : "FAIL ")
+                 + juce::String ("engine released on exit path"));
+            log ("SUMMARY lifecycle complete");
+            juce::JUCEApplication::getInstance()->systemRequestedQuit();
+        }
+
         void runTrayTest()
         {
             juce::StringArray report;
@@ -9483,9 +9921,20 @@ namespace
         {
             if (auto* content = getMainComponent())
                 content->saveLastLayoutOnClose();
-            // Keep the audio engine alive; the tray icon is the explicit way
-            // to stop it or quit.
+            // Coherent, configurable close behaviour: minimise to the tray
+            // (engine keeps running) or a real exit that stops the engine.
+            if (auto* content = getMainComponent())
+            {
+                if (content->isExitOnCloseEnabled())
+                {
+                    juce::JUCEApplication::getInstance()->systemRequestedQuit();
+                    return;
+                }
+            }
             setVisible (false);
+            if (auto* content = getMainComponent())
+                content->setStatusText (L10n::tr ("Ridotto nel tray: il motore continua; usa Esci dal tray per chiudere",
+                                                  "Minimised to tray: the engine keeps running; use tray Exit to quit"));
         }
 
     private:
@@ -9614,7 +10063,7 @@ namespace
     public:
         const juce::String getApplicationName() override { return "NL Audio Matrix"; }
         const juce::String getApplicationVersion() override { return nlmatrix::buildVersion(); }
-        bool moreThanOneInstanceAllowed() override { return true; }
+        bool moreThanOneInstanceAllowed() override { return false; }
 
         void initialise (const juce::String&) override
         {
@@ -9644,7 +10093,11 @@ namespace
             const int profileIndex = args.indexOf ("--profile");
             if (profileIndex >= 0 && profileIndex + 1 < args.size())
                 if (auto* content = window->getMainComponent())
+                {
                     content->loadProfileFile (juce::File (args[profileIndex + 1]));
+                    if (! testMode)
+                        content->autostartEngineIfConfigured();
+                }
             else if (auto* content = window->getMainComponent())
             {
                 juce::Component::SafePointer<MainComponent> safe (content);
@@ -9713,6 +10166,12 @@ namespace
                 return;
             }
 
+            if (args.contains ("--lifecycletest"))
+            {
+                window->runLifecycleTest();
+                return;
+            }
+
             if (args.contains ("--vdevtest"))
             {
                 window->runVirtualDeviceTest();
@@ -9743,17 +10202,22 @@ namespace
 
         void shutdown() override
         {
-            // Persist the last session on a real exit (tray Exit / File > Exit):
-            // until now only "Apply live" wrote it, so a clean shutdown could
-            // leave a stale file that no longer reflected the running profile.
-            // Test modes disable session persistence, so automation is a no-op.
+            // Real application exit (tray Exit / File > Exit / X when configured
+            // to exit): persist the session, then stop the engine gracefully so
+            // ASIO/WASAPI devices, threads and handles are released.
             if (window != nullptr)
                 if (auto* content = window->getMainComponent())
-                    content->saveLastSessionProfile();
+                    content->prepareForApplicationExit();
             window.reset();
         }
         void systemRequestedQuit() override { quit(); }
-        void anotherInstanceStarted (const juce::String&) override {}
+        void anotherInstanceStarted (const juce::String&) override
+        {
+            // Single instance: a second launch brings the existing window back
+            // instead of opening a competing GUI/router pair.
+            if (window != nullptr)
+                window->showWindow();
+        }
 
     private:
         std::unique_ptr<MainWindow> window;
