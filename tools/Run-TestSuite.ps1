@@ -43,7 +43,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('smoke','guiselftest','guilifecycle','guistudio','guiquickconnect','quickconnect','endpoints','endpoints8','matrix')]
+    [ValidateSet('smoke','guiselftest','guilifecycle','guistudio','guiquickconnect','quickconnect','endpoints','endpoints8','mixminus','matrix')]
     [string]$Suite = 'smoke',
     [string]$OutRoot = '',
     [string]$BuildDir = '',
@@ -142,6 +142,12 @@ function Get-SuiteSteps([string]$suite) {
             # 'endpoints' suite (A22 makes it fail for now): the two criteria are
             # deliberately not merged.
             return @(@{ name = 'All 8 endpoints enumerated'; kind = 'guest-endpoints8' })
+        }
+        'mixminus' {
+            # Engine-level mix-minus + bus proof from METERS telemetry only (test
+            # sources, no capture path, no WAV analysis).
+            return @(@{ name = 'Mix-minus and bus level proof'; kind = 'script';
+                       script = 'tools\vm\Run-MixMinusProof.ps1'; args = @() })
         }
         'endpoints' {
             return @(@{ name = 'Endpoint audio verification'; kind = 'script';
@@ -414,7 +420,7 @@ if ($Unattended) {
         $summaryPath = Join-Path $runDir 'summary.json'
         $result = 'ERROR'; $steps = @(); $summaryText = ''
         try {
-            if (-not $Force -and $Suite -in @('quickconnect','guiquickconnect','endpoints','matrix')) {
+            if (-not $Force -and $Suite -in @('quickconnect','guiquickconnect','endpoints','mixminus','matrix')) {
                 $busy = Test-AudioSessionBusy
                 if ($busy) { throw "BUSY: $busy" }
             }
