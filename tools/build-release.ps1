@@ -207,12 +207,6 @@ $portableZip = Join-Path $releaseDir ("NL-Audio-Matrix-$version-portable.zip")
 if (Test-Path $portableZip) { Remove-Item $portableZip -Force }
 Compress-Archive -Path (Join-Path $portable '*') -DestinationPath $portableZip -CompressionLevel Optimal
 
-# Asset-level manifest for the GitHub pre-release.
-$assetLines = New-Object System.Collections.Generic.List[string]
-Get-ChildItem $releaseDir -File | Sort-Object Name | ForEach-Object {
-    $assetLines.Add((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + $_.Name)
-}
-Set-Content -Path (Join-Path $releaseDir 'SHA256SUMS.txt') -Value ($assetLines -join [Environment]::NewLine) -Encoding ASCII
 Copy-Item (Join-Path $stagingRoot 'BUILD_INFO.json') (Join-Path $releaseDir 'BUILD_INFO.json') -Force
 
 $notes = @"
@@ -346,6 +340,15 @@ LOG E REPORT
   %ProgramData%\NL Audio Matrix\reports\last-diagnose.txt / last-verify.json
 "@
 Set-Content -Path (Join-Path $releaseDir 'GUIDA-INSTALLAZIONE.txt') -Value $guide -Encoding UTF8
+
+# Asset-level manifest for the GitHub pre-release: written last so it covers
+# every asset of this folder (its own file is excluded by definition).
+$assetLines = New-Object System.Collections.Generic.List[string]
+Get-ChildItem $releaseDir -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } |
+    Sort-Object Name | ForEach-Object {
+        $assetLines.Add((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + $_.Name)
+    }
+Set-Content -Path (Join-Path $releaseDir 'SHA256SUMS.txt') -Value ($assetLines -join [Environment]::NewLine) -Encoding ASCII
 
 Write-Host ("Release directory: " + $releaseDir)
 Get-ChildItem $releaseDir -File | Select-Object Name,Length | Format-Table -AutoSize
