@@ -1,4 +1,4 @@
-
+﻿
 param(
     [string]$Configuration = 'Release',
     [string]$OutputRoot = '',

@@ -39,6 +39,47 @@ if (-not (Test-Path $NotesFile)) { throw "release notes not found: $NotesFile" }
 
 function Step([string]$Text) { Write-Host ('[{0}] {1}' -f (Get-Date -Format 'HH:mm:ss'), $Text) }
 
+# ------------------------------------------------------------------- notes text
+# The release body must be the Markdown file as a plain UTF-8 string. Never pass
+# the result of Get-Item/Get-Content -Raw through ConvertTo-Json: a FileInfo or
+# PSObject serializes PSPath, PSDrive, PSProvider and other local metadata into
+# the public body. File.ReadAllText returns a [string] and is the only reader used.
+$BodyMarkers = @('PSPath', 'PSDrive', 'PSProvider', 'PSParentPath', 'PSChildName',
+                 'PSIsContainer', 'ReadCount', '=>', 'ghp_', 'github_pat_',
+                 'Authorization:', 'password=')
+
+function ConvertFrom-Mojibake([string]$Text) {
+    # UTF-8 bytes decoded as Windows-1252 produce sequences such as a-euro-curlyquote.
+    if (-not ($Text.Contains([string][char]0x00E2) -or $Text.Contains([string][char]0x00C3))) { return $Text }
+    try { $cp = [System.Text.Encoding]::GetEncoding(1252) }
+    catch { throw 'release notes look like mojibake and code page 1252 is unavailable for repair' }
+    $repaired = [System.Text.Encoding]::UTF8.GetString($cp.GetBytes($Text))
+    if ($repaired.Contains([string][char]0xFFFD)) { throw 'release notes contain undecodable characters' }
+    if ($repaired.Contains([string][char]0x00E2) -or $repaired.Contains([string][char]0x00C3)) {
+        throw 'release notes still look like mojibake after UTF-8/Windows-1252 repair'
+    }
+    Step 'repaired legacy mojibake in the release notes'
+    return $repaired
+}
+
+function Read-NotesText([string]$Path) {
+    $text = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+    $text = $text.TrimStart([char[]]@([char]0xFEFF))
+    return ConvertFrom-Mojibake $text
+}
+
+function Assert-NotesText($Notes) {
+    if ($null -eq $Notes -or $Notes -isnot [string]) { throw 'release notes must be a plain string' }
+    if ($Notes.Trim().Length -eq 0) { throw 'release notes are empty' }
+    if (-not $Notes.StartsWith('#')) { throw 'release notes do not start with a Markdown heading' }
+    if ($Notes.Contains([string][char]0xFFFD)) { throw 'release notes contain undecodable characters' }
+    foreach ($marker in $BodyMarkers) {
+        if ($Notes.Contains($marker)) {
+            throw ('release notes contain ' + $marker + '; refusing to publish object metadata or a credential')
+        }
+    }
+}
+
 # ------------------------------------------------------------------ tag identity
 Step "checking tag $Tag locally and on the remote"
 & git -C $root rev-parse --verify ("refs/tags/" + $Tag) 2>$null | Out-Null
@@ -66,7 +107,20 @@ $cred = $null; $credText = $null; $secret = $null
 $api = "https://api.github.com/repos/$Repository"
 $uploadApi = "https://uploads.github.com/repos/$Repository"
 $title = 'NL Audio Matrix ' + $version + ' - complete installer (test-signed driver)'
-$notes = Get-Content $NotesFile -Raw
+$notes = Read-NotesText $NotesFile
+Assert-NotesText $notes
+Step ('release notes: ' + $notes.Length + ' chars, UTF-8 plain text')
+$buildInfoPath = Join-Path $ReleaseDir 'BUILD_INFO.json'
+if (Test-Path $buildInfoPath) {
+    $buildInfo = [System.IO.File]::ReadAllText($buildInfoPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    if ($buildInfo.buildId -and -not $notes.Contains([string]$buildInfo.buildId)) {
+        throw ('release notes do not mention the Build ID ' + $buildInfo.buildId)
+    }
+    if ($buildInfo.commit -and -not $notes.Contains([string]$buildInfo.commit)) {
+        throw ('release notes do not mention the source commit ' + $buildInfo.commit)
+    }
+    Step ('notes match BUILD_INFO: ' + $buildInfo.buildId + ' / ' + $buildInfo.shortCommit)
+}
 
 # ----------------------------------------------------------------- release object
 $existing = $null
@@ -78,17 +132,28 @@ catch {
 }
 $payload = '{"name":' + (ConvertTo-Json $title -Compress) + ',"body":' + (ConvertTo-Json $notes -Compress) +
            ',"prerelease":true,"draft":false}'
+$utf8 = [System.Text.Encoding]::UTF8
 if ($null -eq $existing) {
     Step 'creating the pre-release'
     $create = '{"tag_name":' + (ConvertTo-Json $Tag -Compress) + ',' + $payload.TrimStart('{')
     $release = Invoke-RestMethod -Method Post -Uri "$api/releases" -Headers $headers `
-        -ContentType 'application/json; charset=utf-8' -Body $create
+        -ContentType 'application/json; charset=utf-8' -Body $utf8.GetBytes($create)
 } else {
     Step ("updating the existing release " + $existing.id)
     $release = Invoke-RestMethod -Method Patch -Uri ("$api/releases/" + $existing.id) -Headers $headers `
-        -ContentType 'application/json; charset=utf-8' -Body $payload
+        -ContentType 'application/json; charset=utf-8' -Body $utf8.GetBytes($payload)
 }
 Step ('release id ' + $release.id)
+
+# GitHub must return exactly the Markdown that was sent, not a serialized object.
+$stored = Invoke-RestMethod -Method Get -Uri ("$api/releases/" + $release.id) -Headers $headers
+if ([string]$stored.body -cne $notes) {
+    throw ('GitHub stored a different release body: sent ' + $notes.Length + ' chars, got ' + ([string]$stored.body).Length + ' chars')
+}
+foreach ($marker in $BodyMarkers) {
+    if (([string]$stored.body).Contains($marker)) { throw ('release body contains ' + $marker) }
+}
+Step ('body verified on GitHub: ' + $notes.Length + ' chars, plain Markdown')
 
 # --------------------------------------------------------------------- uploads
 $files = Get-ChildItem $ReleaseDir -File | Sort-Object Name
@@ -108,6 +173,10 @@ $problems = New-Object System.Collections.Generic.List[string]
 if ($release.tag_name -ne $Tag) { $problems.Add('tag_name mismatch: ' + $release.tag_name) }
 if (-not $release.prerelease) { $problems.Add('release is not a pre-release') }
 if ($release.draft) { $problems.Add('release is a draft') }
+if ([string]$release.body -cne $notes) { $problems.Add('release body differs from RELEASE_NOTES.md') }
+foreach ($marker in $BodyMarkers) {
+    if (([string]$release.body).Contains($marker)) { $problems.Add('release body contains ' + $marker) }
+}
 
 $assets = @{}
 foreach ($asset in $release.assets) { $assets[$asset.name] = $asset }
