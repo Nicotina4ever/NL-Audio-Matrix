@@ -119,20 +119,36 @@ $levelBoth = Get-GuestDestinationDb 'a_both' $configA
 $levelMixMinus = Get-GuestDestinationDb 'b_mixminus' $configB
 $levelBus = Get-GuestDestinationDb 'c_bus' $configC
 
+# D/E: inverse (polarity) proof with two identical tones.  Both oscillators start
+# at phase 0, so without inversion they sum to +6 dB; inverting one must cancel.
+$identicalTwo = (New-TestSource 't1' 'tone 1000' 1000) + ', ' + (New-TestSource 't2' 'tone 1000' 1000)
+$identicalInverted = (New-TestSource 't1' 'tone 1000' 1000) + ', ' + (New-TestSource 't2' 'tone 1000 inverted' 1000).Replace('"level": 0.25 }', '"level": 0.25, "polarity": true }')
+$configD = New-ConfigJson 'mixminus D: identical tones sum' $identicalTwo $destinationPlain '' $routesBoth
+$configE = New-ConfigJson 'mixminus E: one tone inverted cancels' $identicalInverted $destinationPlain '' $routesBoth
+$levelSum = Get-GuestDestinationDb 'd_polarity_sum' $configD
+$levelInverted = Get-GuestDestinationDb 'e_polarity_invert' $configE
+
 $twoTonesLouder = ($levelBoth - $levelMixMinus) -ge 3.0
 $mixMinusNearSingle = ([math]::Abs($levelMixMinus - $ExpectedSingleDb)) -le $ToleranceDb
 $busNearSingle = ([math]::Abs($levelBus - $ExpectedSingleDb)) -le $ToleranceDb
+$identicalSumOk = ([math]::Abs($levelSum + 6.0)) -le $ToleranceDb
+# Inversion of one of two equal, phase-aligned tones must cancel: at least 25 dB
+# below the summed level (the mixer applies it per source before the sum).
+$inverseCancels = $levelInverted -le ($levelSum - 25.0)
 
 $summary = [ordered]@{
     suite = 'mixminus'
     routerSha256 = $routerHash
     seconds = $Seconds
-    levelsDb = [ordered]@{ bothSources = $levelBoth; mixMinus = $levelMixMinus; bus = $levelBus }
+    levelsDb = [ordered]@{ bothSources = $levelBoth; mixMinus = $levelMixMinus; bus = $levelBus
+                          identicalSum = $levelSum; inverted = $levelInverted }
     checks = [ordered]@{
         twoSourcesLouderThanOne = $twoTonesLouder
         mixMinusAttenuates = $twoTonesLouder
         mixMinusSingleSourceLevel = $mixMinusNearSingle
         busSingleSourceLevel = $busNearSingle
+        identicalTonesSum = $identicalSumOk
+        inverseCancels = $inverseCancels
     }
     evidenceDir = $OutputDir
 }

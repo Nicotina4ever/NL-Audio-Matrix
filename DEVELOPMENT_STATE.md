@@ -30,8 +30,10 @@ All tests in the VMware VM; the host only compiles and analyses WAV files.
   (suite `mixminus`) runs three headless 8 s configurations with test sources and reads
   the destination level from the router's own METERS telemetry only (no WAV): two summed
   tones give **-6.0 dBFS**, the same two tones with `mixMinus:["t2"]` give **-12.0 dBFS**,
-  and a single tone routed tone -> bus -> destination gives **-12.0 dBFS**. All four
-  checks PASS, so the GUI mix-minus/bus controls drive a real engine behaviour.
+  and a single tone routed tone -> bus -> destination gives **-12.0 dBFS**; two identical
+  phase-aligned tones sum to **-6.0 dBFS** and inverting one cancels to the meter floor
+  **-100 dBFS**. All six checks PASS, so the GUI mix-minus/bus/polarity controls drive a
+  real engine behaviour.
 - **Hidden tray regression fixed.** The selftest's tray test appended its PASS/FAIL lines
   after the SUMMARY, so the coordinator never counted them: "engine survives window hide"
   had been failing silently. Root cause: a selftest fixture profile was deleted while the
