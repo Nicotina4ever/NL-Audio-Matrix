@@ -3383,9 +3383,47 @@ namespace
         juce::Colour stateColour { Palette::muted };
     };
 
+    // How many NLMatrixRouter.exe processes are alive right now.  Shared by the
+    // component and by the lifecycle test: only the router owns audio devices, so
+    // the count is the invariant both check.
+    static int countRouterProcesses()
+    {
+       #if JUCE_WINDOWS
+        HANDLE snapshot = CreateToolhelp32Snapshot (TH32CS_SNAPPROCESS, 0);
+        if (snapshot == INVALID_HANDLE_VALUE)
+            return 0;
+        int count = 0;
+        PROCESSENTRY32W entry {};
+        entry.dwSize = sizeof (entry);
+        if (Process32FirstW (snapshot, &entry))
+        {
+            do
+            {
+                if (juce::String (entry.szExeFile).equalsIgnoreCase ("NLMatrixRouter.exe"))
+                    ++count;
+            } while (Process32NextW (snapshot, &entry));
+        }
+        CloseHandle (snapshot);
+        return count;
+       #else
+        return 0;
+       #endif
+    }
+
     class MainComponent final : public juce::Component, private juce::Timer
     {
     public:
+        // User/CLI-visible Quick Connect selection: which ASIO device, which
+        // single channel (1-based) and which NL Mic endpoint it feeds.
+        struct QuickConnectChoice
+        {
+            juce::String driver;
+            int channel1 = 1;      // ASIO input channel, 1-based as the driver shows it
+            int endpointIndex = 0; // virtual endpoint: 0 = NL Mic 1
+            bool bidirectional = false;
+            bool testTone = false;
+        };
+
         MainComponent()
             : sourceList ("sources", &sourceModel),
               destinationList ("destinations", &destinationModel),
@@ -3462,7 +3500,7 @@ namespace
             sectionMixer.onClick = [this] { openMixer(); };
             sectionDevices.onClick = [this] { setDevicesPanelVisible (! devicesPanelVisible); };
             sectionDiagnostics.onClick = [this] { openDiagnostics(); };
-            sectionQuickConnect.onClick = [this] { quickConnect(); };
+            sectionQuickConnect.onClick = [this] { showQuickConnectDialog(); };
 
             addAndMakeVisible (statusBar);
             statusBar.onClick = [this] { setDevicesPanelVisible (true); };
@@ -4030,7 +4068,9 @@ namespace
         {
             if (! writeProfile (profileTempFile(), error))
                 return false;
-            if (currentProfileFile != juce::File())
+            // Quick Connect must never write its generated project over the
+            // Studio profile that was loaded before it.
+            if (currentProfileFile != juce::File() && ! liveProjectIsQuickConnect)
                 return writeProfile (currentProfileFile, error);
             return true;
         }
@@ -5052,6 +5092,97 @@ namespace
             check (! isEngineRunning(), "router stops from GUI");
             check (! routerControlFile.existsAsFile(), "graceful stop control channel cleaned up");
 
+            // Quick Connect (A25b): the dialog/CLI action must accept a specific
+            // ASIO device + single channel + endpoint, keep its own preset, and
+            // never overwrite a Studio profile or the Studio last session.
+            {
+                const auto qcRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                        .getChildFile ("nlmatrix_selftest_qc");
+                qcRoot.deleteRecursively();
+                qcRoot.createDirectory();
+                const auto presetDir = qcRoot.getChildFile ("quickconnect");
+                presetDir.createDirectory();
+                const auto studioFile = qcRoot.getChildFile ("Studio Take 1.json");
+
+                const auto savedQcDriver = qcDriver;
+                const auto savedQcChannel = qcChannel1;
+                const auto savedQcEndpoint = qcEndpoint;
+                const auto savedQcBidirectional = qcBidirectional;
+                const auto savedAsioForQc = asioBox.getText();
+                const auto savedProfileNameForQc = profileName.getText();
+
+                profileName.setText ("Studio Take 1", juce::dontSendNotification);
+                asioBox.setText ("NL Selftest ASIO", juce::dontSendNotification);
+                juce::String studioError;
+                const bool studioWritten = writeProfile (studioFile, studioError);
+                check (studioWritten, "selftest Studio profile fixture written");
+                const auto studioBytesBefore = studioFile.loadFileAsString();
+                const bool studioLoaded = loadProfileFile (studioFile);
+                check (studioLoaded, "selftest Studio profile loads as the live project");
+                const int studioSourceCount = (int) sources.size();
+                check (studioSourceCount > 0, "selftest Studio profile has sources");
+
+                quickConnectPresetDirOverride = presetDir;
+                lastSessionFileOverride = qcRoot.getChildFile ("last_session.json");
+                setSessionPersistenceEnabled (true);
+                QuickConnectChoice choice;
+                choice.driver = "NL Selftest ASIO";
+                choice.channel1 = 3;
+                choice.endpointIndex = 2;
+                choice.testTone = true;
+                quickConnectWith (choice, false); // model only: no engine in selftest
+                saveLastSessionProfile();         // what the real exit path does
+                setSessionPersistenceEnabled (false);
+
+                check (sources.size() == 1 && sources.front().channels == std::vector<int> { 2 },
+                       "quick connect selects the requested ASIO channel");
+                check (destinations.size() == 1 && destinations.front().driverEndpoint == 2
+                           && destinations.front().name == "NL Mic 3",
+                       "quick connect selects the requested NL Mic endpoint");
+                check (quickConnectPresetFile().existsAsFile(),
+                       "quick connect preset written under its own directory");
+                check (studioFile.existsAsFile() && studioFile.loadFileAsString() == studioBytesBefore,
+                       "quick connect does not overwrite the Studio profile file");
+                check (currentProfileFile == studioFile,
+                       "quick connect keeps the loaded Studio profile as current profile");
+                check (lastSessionProfileFile().existsAsFile()
+                           && lastSessionProfileFile().loadFileAsString().contains ("Studio Take 1"),
+                       "last session keeps the Studio project while Quick Connect runs");
+                check (hasStudioSessionBackup(), "Studio session backup captured before Quick Connect");
+
+                // Bidirectional option: reverse path NL Return -> ASIO output.
+                choice.channel1 = 1;
+                choice.endpointIndex = 0;
+                choice.bidirectional = true;
+                quickConnectWith (choice, false);
+                bool reverseOk = sources.size() == 2 && destinations.size() == 2 && routes.size() == 2;
+                if (reverseOk)
+                {
+                    reverseOk = sources.back().type == "loopback"
+                                && sources.back().endpoint == "NL Return 1"
+                                && destinations.back().type == "asio-out";
+                }
+                check (reverseOk, "quick connect bidirectional adds NL Return -> ASIO out");
+
+                restoreStudioSession();
+                check (! liveProjectIsQuickConnect && (int) sources.size() == studioSourceCount,
+                       "restore Studio session brings the Studio project back");
+
+                quickConnectPresetDirOverride = juce::File();
+                lastSessionFileOverride = juce::File();
+                qcDriver = savedQcDriver;
+                qcChannel1 = savedQcChannel;
+                qcEndpoint = savedQcEndpoint;
+                qcBidirectional = savedQcBidirectional;
+                asioBox.setText (savedAsioForQc, juce::dontSendNotification);
+                profileName.setText (savedProfileNameForQc, juce::dontSendNotification);
+                studioSessionBackup = juce::var();
+                studioSessionBackupName.clear();
+                studioSessionBackupFile = juce::File();
+                liveProjectIsQuickConnect = false;
+                qcRoot.deleteRecursively();
+            }
+
             // Restore the operator's real preferences (or leave a clean default
             // file on a fresh machine, as the acceptance harness expects).
             if (selftestHadPrefs)
@@ -5091,6 +5222,146 @@ namespace
                                  .getChildFile ("nlmatrix_selftest.log");
             log.replaceWithText (text);
             DBG (text);
+        }
+
+        // Exposed to the lifecycle test so the "never kill a foreign engine"
+        // guarantee is checked with a real, deterministic foreign process.
+        bool clearStrayRouterForStartForTest (juce::String& reason)
+        {
+            return clearStrayRouterForStart (reason);
+        }
+
+        // Used by the menu to enable/disable "restore Studio session".
+        bool canRestoreStudioSession() const { return hasStudioSessionBackup(); }
+
+        // Deterministic GUI-driven Quick Connect verification used by the local
+        // test coordinator (--quickconnecttest).  It runs the same production
+        // action the Quick Connect dialog runs, then keeps the engine alive for
+        // the external client capture window before the real exit path.
+        void runQuickConnectTest (const juce::File& logFile, QuickConnectChoice choice,
+                                  int holdMs, const juce::File& studioProfile,
+                                  const juce::File& presetDirOverride)
+        {
+            logFile.deleteFile();
+            auto log = [logFile] (const juce::String& line) { logFile.appendText (line + "\n"); };
+            log ("NL Audio Matrix Quick Connect GUI test");
+            log (juce::String ("build=") + nlmatrix::buildVersion()
+                 + " id=" + nlmatrix::buildId());
+
+            juce::String studioBefore;
+            if (studioProfile != juce::File())
+            {
+                const bool loaded = loadProfileFile (studioProfile);
+                log (juce::String (loaded ? "PASS " : "FAIL ")
+                     + "studio profile loaded before Quick Connect");
+                if (studioProfile.existsAsFile())
+                    studioBefore = studioProfile.loadFileAsString();
+            }
+            if (presetDirOverride != juce::File())
+                quickConnectPresetDirOverride = presetDirOverride;
+
+            quickConnectWith (choice);
+
+            const auto preset = quickConnectPresetFile();
+            log (juce::String (preset.existsAsFile() ? "PASS " : "FAIL ")
+                 + "quick connect preset written: " + preset.getFullPathName());
+            log (juce::String (preset.getParentDirectory() != studioProfile.getParentDirectory()
+                                   || studioProfile == juce::File()
+                                   ? "PASS " : "FAIL ")
+                 + "quick connect preset isolated from Studio profiles");
+            if (studioProfile != juce::File())
+            {
+                juce::String studioAfter;
+                if (studioProfile.existsAsFile())
+                    studioAfter = studioProfile.loadFileAsString();
+                log (juce::String (studioBefore.isNotEmpty() && studioBefore == studioAfter
+                                       ? "PASS " : "FAIL ")
+                     + "studio profile untouched");
+            }
+
+            juce::String model;
+            if (! sources.empty() && ! destinations.empty())
+            {
+                const auto& s = sources.front();
+                const auto& d = destinations.front();
+                model << "source=" << s.type << " device=" << s.deviceId
+                      << " channel0=" << juce::String (s.channels.empty() ? -1 : s.channels.front())
+                      << " dest=" << d.type << " endpoint0=" << juce::String (d.driverEndpoint)
+                      << " routes=" << juce::String ((int) routes.size());
+            }
+            log ("MODEL " + model);
+            log (juce::String (sources.size() >= (choice.bidirectional ? 2 : 1)
+                               && destinations.size() >= (choice.bidirectional ? 2 : 1)
+                               && routes.size() >= (choice.bidirectional ? 2 : 1)
+                                   ? "PASS " : "FAIL ")
+                 + "quick connect project model");
+
+            // The preset on disk must carry exactly the device, channel and
+            // endpoint the user (or the CLI test) selected.
+            {
+                const auto parsed = juce::JSON::parse (preset);
+                bool presetOk = false;
+                juce::String presetAsio;
+                int presetChannel = -1, presetEndpoint = -1;
+                if (auto* root = parsed.getDynamicObject())
+                {
+                    presetAsio = root->getProperty ("asio").toString();
+                    if (auto* list = root->getProperty ("sources").getArray())
+                        if (auto* first = list->getFirst().getDynamicObject())
+                        {
+                            if (auto* channels = first->getProperty ("channels").getArray())
+                                if (! channels->isEmpty()) presetChannel = (int) (*channels)[0];
+                            if (presetAsio.isEmpty())
+                                presetAsio = first->getProperty ("deviceId").toString();
+                        }
+                    if (auto* list = root->getProperty ("destinations").getArray())
+                        if (auto* first = list->getFirst().getDynamicObject())
+                            presetEndpoint = (int) first->getProperty ("driverEndpoint");
+                }
+                const auto wantedAsio = choice.testTone ? asioBox.getText().trim()
+                                                        : choice.driver.trim();
+                presetOk = (wantedAsio.isEmpty() || presetAsio == wantedAsio)
+                           && presetChannel == choice.channel1 - 1
+                           && presetEndpoint == choice.endpointIndex;
+                log ("PRESET asio=" + presetAsio + " channel0=" + juce::String (presetChannel)
+                     + " endpoint0=" + juce::String (presetEndpoint));
+                log (juce::String (presetOk ? "PASS " : "FAIL ")
+                     + "quick connect preset carries the selected device and channel");
+            }
+
+            int waited = 0;
+            while (! isEngineRunning() && waited < 15000)
+            {
+                juce::Thread::sleep (50);
+                waited += 50;
+            }
+            log (juce::String (isEngineRunning() ? "PASS " : "FAIL ")
+                 + "engine running from the GUI Quick Connect action");
+
+            const auto ready = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                   .getChildFile ("nlmatrix_qc_ready.txt");
+            ready.replaceWithText ("READY engine=" + juce::String (isEngineRunning() ? 1 : 0)
+                                   + " holdMs=" + juce::String (holdMs) + "\n");
+            log ("QC ENGINE RUNNING");
+            juce::Thread::sleep (holdMs);
+            log ("QC HOLD DONE");
+
+            prepareForApplicationExit();
+            juce::Thread::sleep (400);
+            log (juce::String (isEngineRunning() ? "FAIL " : "PASS ")
+                 + "engine released on real application exit");
+            log ("QC DONE");
+
+            int fails = 0;
+            juce::StringArray lines;
+            lines.addLines (logFile.loadFileAsString());
+            for (const auto& line : lines)
+                if (line.startsWith ("FAIL ")) ++fails;
+            if (auto* app = juce::JUCEApplication::getInstance())
+            {
+                app->setApplicationReturnValue (fails == 0 ? 0 : 1);
+                app->systemRequestedQuit();
+            }
         }
 
         void paint (juce::Graphics& g) override
@@ -5993,6 +6264,16 @@ namespace
                         engineAutostart = (bool) ui->getProperty ("engineAutostart");
                     if (ui->hasProperty ("exitOnClose"))
                         exitOnClose = (bool) ui->getProperty ("exitOnClose");
+                    // Last Quick Connect selection (device + single channel +
+                    // endpoint), so reopening the dialog keeps the operator's choice.
+                    if (ui->hasProperty ("qcDriver"))
+                        qcDriver = ui->getProperty ("qcDriver").toString();
+                    if (ui->hasProperty ("qcChannel"))
+                        qcChannel1 = juce::jlimit (1, 128, (int) ui->getProperty ("qcChannel"));
+                    if (ui->hasProperty ("qcEndpoint"))
+                        qcEndpoint = juce::jlimit (0, 3, (int) ui->getProperty ("qcEndpoint"));
+                    if (ui->hasProperty ("qcBidirectional"))
+                        qcBidirectional = (bool) ui->getProperty ("qcBidirectional");
                 }
                 audioBar.setVisible (devicesPanelVisible);
                 sectionDevices.setToggleState (devicesPanelVisible, juce::dontSendNotification);
@@ -6034,6 +6315,10 @@ namespace
                 ui->setProperty ("devicesPanelVisible", devicesPanelVisible);
                 ui->setProperty ("engineAutostart", engineAutostart);
                 ui->setProperty ("exitOnClose", exitOnClose);
+                ui->setProperty ("qcDriver", qcDriver);
+                ui->setProperty ("qcChannel", qcChannel1);
+                ui->setProperty ("qcEndpoint", qcEndpoint);
+                ui->setProperty ("qcBidirectional", qcBidirectional);
                 o->setProperty ("ui", juce::var (ui));
             }
             preferencesFile().replaceWithText (juce::JSON::toString (rootVar, true));
@@ -6605,6 +6890,8 @@ namespace
         }
         juce::File lastSessionProfileFile() const
         {
+            if (lastSessionFileOverride != juce::File())
+                return lastSessionFileOverride;
             auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
                            .getChildFile ("NL Audio Matrix");
             dir.createDirectory();
@@ -6614,6 +6901,15 @@ namespace
         void saveLastSessionProfile()
         {
             if (! sessionPersistenceEnabled) return;
+            // While Quick Connect is the live project, the saved last session
+            // stays the Studio project: restarting the application never loses
+            // the user's Studio workspace and Quick Connect never overwrites it.
+            if (liveProjectIsQuickConnect && studioSessionBackup.isObject())
+            {
+                lastSessionProfileFile().replaceWithText (
+                    juce::JSON::toString (studioSessionBackup, true));
+                return;
+            }
             juce::String error;
             writeProfile (lastSessionProfileFile(), error);
         }
@@ -6894,7 +7190,9 @@ namespace
                 case 2002: addNodeFromCanvas ("destination"); break;
                 case 2003: addNodeFromCanvas ("bus"); break;
                 case 2004: toggleRouter(); break;
-                case 2006: quickConnect(); break;
+                case 2006: showQuickConnectDialog(); break;
+                case 2007: quickConnect(); break;
+                case 2008: restoreStudioSession(); break;
                 case 2005: applyProfile(); break;
                 case 3001: refreshDevices(); refreshAll(); break;
                 case 3002: showVirtualDevices(); break;
@@ -7242,33 +7540,39 @@ namespace
             statusBar.setState (state, colour, detail);
         }
 
-        void killStrayRouterProcesses()
+
+        // Only one router may own the audio devices, but an engine that is
+        // already active must never be terminated behind the user's back: this
+        // application only ever asks, through the graceful --control channel, a
+        // leftover engine of one of its own sessions to stop.  Anything else
+        // (another app, a script, a scheduled task) keeps running and the user is
+        // told why a second engine is not started.
+        bool clearStrayRouterForStart (juce::String& reason)
         {
-           #if JUCE_WINDOWS
-            // A crashed or orphaned router from a previous GUI session must not
-            // keep the audio devices open: only one router may own the devices.
-            HANDLE snapshot = CreateToolhelp32Snapshot (TH32CS_SNAPPROCESS, 0);
-            if (snapshot == INVALID_HANDLE_VALUE)
-                return;
-            PROCESSENTRY32W entry {};
-            entry.dwSize = sizeof (entry);
-            if (Process32FirstW (snapshot, &entry))
+            reason.clear();
+            if (countRouterProcesses() <= 0)
+                return true;
+            const auto control = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                     .getChildFile ("nlmatrix_router_control.txt");
+            control.replaceWithText ("stop\n");
+            const auto deadline = juce::Time::getMillisecondCounterHiRes() + 2500.0;
+            while (countRouterProcesses() > 0
+                   && juce::Time::getMillisecondCounterHiRes() < deadline)
+                juce::Thread::sleep (50);
+            control.deleteFile();
+            if (countRouterProcesses() == 0)
             {
-                do
-                {
-                    if (juce::String (entry.szExeFile).equalsIgnoreCase ("NLMatrixRouter.exe"))
-                    {
-                        if (HANDLE h = OpenProcess (PROCESS_TERMINATE, FALSE, entry.th32ProcessID))
-                        {
-                            TerminateProcess (h, 0);
-                            CloseHandle (h);
-                            logLine ("terminated stray NLMatrixRouter pid " + juce::String ((int) entry.th32ProcessID));
-                        }
-                    }
-                } while (Process32NextW (snapshot, &entry));
+                logLine ("stray router stopped through the graceful control channel");
+                return true;
             }
-            CloseHandle (snapshot);
-           #endif
+            reason = L10n::tr ("Un motore NL Audio Matrix e' gia' attivo e non risponde al canale di "
+                               "stop di questa applicazione: non lo interrompo. Chiudilo dal suo tray "
+                               "(o termina NLMatrixRouter.exe) per avviare un nuovo motore.",
+                               "An NL Audio Matrix engine is already running and does not answer this "
+                               "application's stop channel: it will not be interrupted. Close it from "
+                               "its tray (or terminate NLMatrixRouter.exe) to start a new engine.");
+            logLine ("foreign NLMatrixRouter left untouched; engine start refused");
+            return false;
         }
 
         // Controlled stop used when the application really exits (tray Exit,
@@ -8821,9 +9125,19 @@ namespace
             }
             idleStopped = false;
             engineLastError.clear();
-            // Only one router may own the audio devices: a leftover from a
-            // crashed session is terminated before starting a new engine.
-            killStrayRouterProcesses();
+            // Only one router may own the audio devices: a leftover engine from a
+            // previous session is asked to stop gracefully; an engine that belongs
+            // to somebody else is never killed.
+            {
+                juce::String slotReason;
+                if (! clearStrayRouterForStart (slotReason))
+                {
+                    engineLastError = slotReason;
+                    setStatus (slotReason);
+                    updateEngineStatusBar();
+                    return;
+                }
+            }
             updateEngineStatusBar();
 
             const auto temp = profileTempFile();
@@ -8964,19 +9278,123 @@ namespace
 
         bool sessionPersistenceEnabled = true;
 
-        // Quick Connect: the user-facing, OBS-free path requested for everyday
-        // sessions.  It builds the smallest runnable project (one ASIO input
-        // channel -> NL Mic 1), applies it and starts the engine.  No profile
-        // is invented silently: this is an explicit user action.
-        void quickConnect()
+        // True while the live project is the generated Quick Connect project, so
+        // the Studio project the user was working on is never overwritten.
+        bool liveProjectIsQuickConnect = false;
+        juce::var studioSessionBackup;
+        juce::String studioSessionBackupName;
+        juce::File studioSessionBackupFile;
+        juce::File quickConnectPresetDirOverride;
+        juce::File lastSessionFileOverride;
+        juce::String qcDriver;
+        int qcChannel1 = 1;
+        int qcEndpoint = 0;
+        bool qcBidirectional = false;
+
+        juce::File quickConnectPresetDir() const
         {
-            if (asioBox.getText().trim().isEmpty())
+            if (quickConnectPresetDirOverride != juce::File())
+                return quickConnectPresetDirOverride;
+            auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+                           .getChildFile ("NL Audio Matrix").getChildFile ("quickconnect");
+            dir.createDirectory();
+            return dir;
+        }
+
+        juce::File quickConnectPresetFile() const
+        {
+            return quickConnectPresetDir().getChildFile ("quick_connect_last.json");
+        }
+
+        bool hasStudioSessionBackup() const
+        {
+            return liveProjectIsQuickConnect && studioSessionBackup.isObject();
+        }
+
+        juce::String describeQuickConnect (const QuickConnectChoice& c) const
+        {
+            juce::String text = (c.testTone ? juce::String ("Test tone 1 kHz")
+                                            : juce::String ("ASIO canale ") + juce::String (c.channel1))
+                                + " -> NL Mic " + juce::String (c.endpointIndex + 1);
+            if (c.bidirectional)
+                text << " + NL Return " << juce::String (c.endpointIndex + 1) << " -> ASIO out";
+            return text;
+        }
+
+        // Quick Connect replaces the live project.  The Studio project in memory
+        // is captured first and never written over: named Studio profiles on disk
+        // stay untouched and the last-session file keeps the Studio project.
+        void captureStudioSessionBackup()
+        {
+            if (liveProjectIsQuickConnect || studioSessionBackup.isObject())
+                return;
+            const auto temp = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                  .getChildFile ("nlmatrix_studio_backup.json");
+            juce::String error;
+            if (writeProfile (temp, error))
+            {
+                studioSessionBackup = juce::JSON::parse (temp);
+                studioSessionBackupName = profileName.getText();
+                studioSessionBackupFile = currentProfileFile;
+            }
+        }
+
+        void restoreStudioSession()
+        {
+            if (! studioSessionBackup.isObject())
+            {
+                setStatus (L10n::tr ("Nessuna sessione Studio da ripristinare",
+                                     "No Studio session to restore"));
+                return;
+            }
+            const auto temp = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                  .getChildFile ("nlmatrix_studio_restore.json");
+            temp.replaceWithText (juce::JSON::toString (studioSessionBackup, true));
+            const auto name = studioSessionBackupName;
+            const auto file = studioSessionBackupFile;
+            stopRouter();
+            juce::String error;
+            if (readProfile (temp, error))
+            {
+                currentProfileFile = file;
+                profileName.setText (name, juce::dontSendNotification);
+                liveProjectIsQuickConnect = false;
+                studioSessionBackup = juce::var();
+                studioSessionBackupName.clear();
+                studioSessionBackupFile = juce::File();
+                refreshAll();
+                setStatus (L10n::tr ("Sessione Studio ripristinata", "Studio session restored"));
+            }
+            else
+            {
+                setStatus (error);
+            }
+        }
+
+        // Quick Connect: the user-facing, OBS-free path requested for everyday
+        // sessions.  It builds the smallest runnable project (one ASIO channel ->
+        // an NL Mic), optionally the reverse path (NL Return -> ASIO output),
+        // stores it as its own preset and starts the engine.
+        void quickConnectWith (QuickConnectChoice choice, bool startEngine = true)
+        {
+            choice.channel1 = juce::jlimit (1, 128, choice.channel1);
+            choice.endpointIndex = juce::jlimit (0, 3, choice.endpointIndex);
+            const auto driver = choice.driver.trim().isNotEmpty()
+                                    ? choice.driver.trim() : asioBox.getText().trim();
+            if (! choice.testTone && driver.isEmpty())
             {
                 setStatus (L10n::tr ("Quick Connect: seleziona prima il driver ASIO principale",
                                      "Quick Connect: select the master ASIO driver first"));
                 return;
             }
+            if (! choice.testTone && ! asioDrivers.isEmpty() && ! asioDrivers.contains (driver))
+            {
+                setStatus (L10n::tr ("Quick Connect: driver ASIO non disponibile: ",
+                                     "Quick Connect: ASIO driver not available: ") + driver);
+                return;
+            }
 
+            captureStudioSessionBackup();
             sources.clear();
             destinations.clear();
             buses.clear();
@@ -8985,17 +9403,29 @@ namespace
             Source src;
             src.id = "qc-src";
             src.name = L10n::tr ("Quick Connect", "Quick Connect");
-            src.type = "asio-in";
-            src.channels = { 0 };
+            if (choice.testTone)
+            {
+                src.type = "test";
+                src.baseFrequency = 1000.0;
+                src.testLevel = 0.25;
+            }
+            else
+            {
+                src.type = "asio-in";
+                src.deviceId = "asio:" + driver;
+            }
+            // One single ASIO channel, mapped exactly to the channel the user
+            // picked (the model stays 0-based, the UI shows 1-based).
+            src.channels = { choice.channel1 - 1 };
             src.x = 120.0f;
             src.y = 220.0f;
             sources.push_back (src);
 
             Destination dst;
             dst.id = "qc-dst";
-            dst.name = "NL Mic 1";
+            dst.name = "NL Mic " + juce::String (choice.endpointIndex + 1);
             dst.type = "driver";
-            dst.driverEndpoint = 0;
+            dst.driverEndpoint = choice.endpointIndex;
             dst.channels = { 0 };
             dst.x = 640.0f;
             dst.y = 220.0f;
@@ -9006,15 +9436,133 @@ namespace
             route.destinationId = dst.id;
             routes.push_back (route);
 
-            profileName.setText ("Quick Connect");
+            if (choice.bidirectional)
+            {
+                Source ret;
+                ret.id = "qc-ret";
+                ret.name = "NL Return " + juce::String (choice.endpointIndex + 1);
+                ret.type = "loopback";
+                ret.endpoint = ret.name;
+                ret.channels = { 0, 1 };
+                ret.x = 120.0f;
+                ret.y = 380.0f;
+                sources.push_back (ret);
+
+                Destination out;
+                out.id = "qc-out";
+                out.name = L10n::tr ("ASIO uscita 1/2", "ASIO output 1/2");
+                out.type = "asio-out";
+                out.channels = { 0, 1 };
+                out.x = 640.0f;
+                out.y = 380.0f;
+                destinations.push_back (out);
+
+                Route reverse;
+                reverse.sourceId = ret.id;
+                reverse.destinationId = out.id;
+                routes.push_back (reverse);
+            }
+
+            profileName.setText ("Quick Connect", juce::dontSendNotification);
+            // The generated project names its ASIO engine device explicitly, so
+            // the router opens exactly the device the user picked.
+            if (driver.isNotEmpty() && asioBox.getText().trim() != driver)
+                asioBox.setText (driver, juce::dontSendNotification);
+            liveProjectIsQuickConnect = true;
+            qcDriver = driver;
+            qcChannel1 = choice.channel1;
+            qcEndpoint = choice.endpointIndex;
+            qcBidirectional = choice.bidirectional;
             patchbay.clearSelection();
             refreshAll();
-            saveLastSessionProfile();
-            if (router == nullptr || ! router->isRunning())
+
+            // The Quick Connect preset lives in its own directory: it can never
+            // overwrite a Studio profile the user saved, and it is independent
+            // from the profile passed on the command line.
+            quickConnectPresetFile().getParentDirectory().createDirectory();
+            juce::String presetError;
+            const bool presetWritten = writeProfile (quickConnectPresetFile(), presetError);
+            logLine ("quick connect preset " + quickConnectPresetFile().getFullPathName()
+                     + " written=" + juce::String (presetWritten ? 1 : 0)
+                     + (presetWritten ? juce::String() : " error=" + presetError));
+            if (sessionPersistenceEnabled)
+                savePreferences();
+
+            if (startEngine && (router == nullptr || ! router->isRunning()))
                 startRouter();
-            setStatus (L10n::tr ("Quick Connect: ASIO canale 1 -> NL Mic 1, motore in avvio",
-                                 "Quick Connect: ASIO channel 1 -> NL Mic 1, engine starting"));
+            setStatus (L10n::tr ("Quick Connect: ", "Quick Connect: ")
+                       + describeQuickConnect (choice)
+                       + L10n::tr (", motore in avvio", ", engine starting"));
             updateEngineStatusBar();
+        }
+
+        void quickConnect()
+        {
+            QuickConnectChoice choice;
+            choice.driver = asioBox.getText().trim();
+            choice.channel1 = 1;
+            choice.endpointIndex = 0;
+            quickConnectWith (choice);
+        }
+
+        void showQuickConnectDialog()
+        {
+            juce::StringArray drivers;
+            const auto master = asioBox.getText().trim();
+            if (master.isNotEmpty()) drivers.add (master);
+            for (const auto& d : asioDrivers)
+                if (! drivers.contains (d)) drivers.add (d);
+            if (drivers.isEmpty())
+            {
+                setStatus (L10n::tr ("Quick Connect: nessun driver ASIO enumerato",
+                                     "Quick Connect: no ASIO driver enumerated"));
+                return;
+            }
+            const auto currentDriver = qcDriver.isNotEmpty() && drivers.contains (qcDriver)
+                                           ? qcDriver : drivers[0];
+            auto* window = new juce::AlertWindow (
+                L10n::tr ("Quick Connect", "Quick Connect"),
+                L10n::tr ("Scegli dispositivo ASIO, canale e endpoint. Il preset Quick Connect "
+                          "non sovrascrive i profili Studio.",
+                          "Choose ASIO device, channel and endpoint. The Quick Connect preset "
+                          "never overwrites Studio profiles."),
+                juce::MessageBoxIconType::NoIcon);
+            window->addComboBox ("device", drivers, currentDriver);
+            window->addTextEditor ("channel", juce::String (juce::jmax (1, qcChannel1)),
+                                   L10n::tr ("Canale ASIO (1 = primo canale)",
+                                             "ASIO channel (1 = first channel)"));
+            juce::StringArray endpoints;
+            for (int i = 1; i <= 4; ++i)
+                endpoints.add ("NL Mic " + juce::String (i));
+            window->addComboBox ("endpoint", endpoints,
+                                 endpoints[juce::jlimit (0, 3, qcEndpoint)]);
+            juce::StringArray directions;
+            directions.add (L10n::tr ("Solo andata: ASIO -> NL Mic",
+                                      "Forward only: ASIO -> NL Mic"));
+            directions.add (L10n::tr ("Bidirezionale: + NL Return -> ASIO out",
+                                      "Bidirectional: + NL Return -> ASIO out"));
+            window->addComboBox ("direction", directions, directions[qcBidirectional ? 1 : 0]);
+            window->addButton (L10n::tr ("Avvia", "Start"), 1,
+                               juce::KeyPress (juce::KeyPress::returnKey));
+            window->addButton (L10n::tr ("Annulla", "Cancel"), 0,
+                               juce::KeyPress (juce::KeyPress::escapeKey));
+            juce::Component::SafePointer<MainComponent> safe (this);
+            window->enterModalState (true, juce::ModalCallbackFunction::create (
+                [safe, window] (int result)
+                {
+                    if (result != 1 || safe == nullptr)
+                        return;
+                    QuickConnectChoice choice;
+                    if (auto* device = window->getComboBoxComponent ("device"))
+                        choice.driver = device->getText().trim();
+                    if (auto* endpoint = window->getComboBoxComponent ("endpoint"))
+                        choice.endpointIndex = juce::jlimit (0, 3, endpoint->getSelectedItemIndex());
+                    if (auto* direction = window->getComboBoxComponent ("direction"))
+                        choice.bidirectional = direction->getSelectedItemIndex() == 1;
+                    choice.channel1 = juce::jlimit (1, 128,
+                                                    window->getTextEditorContents ("channel").getIntValue());
+                    safe->quickConnectWith (choice);
+                }), true);
         }
 
         void applyProfile()
@@ -9582,7 +10130,13 @@ namespace
                 menu.addItem (2001, L10n::tr ("Aggiungi sorgente"));
                 menu.addItem (2002, L10n::tr ("Aggiungi destinazione"));
                 menu.addItem (2003, L10n::tr ("Aggiungi bus"));
-                menu.addItem (2006, "Quick Connect (ASIO -> NL Mic)");
+                menu.addItem (2006, L10n::tr ("Quick Connect..."));
+                menu.addItem (2007, L10n::tr ("Quick Connect rapido (ASIO ch1 -> NL Mic 1)"));
+                {
+                    auto* menuContent = getMainComponent();
+                    menu.addItem (2008, L10n::tr ("Ripristina sessione Studio"), true,
+                                  menuContent != nullptr && menuContent->canRestoreStudioSession());
+                }
                 menu.addSeparator();
                 menu.addItem (2004, L10n::tr ("Avvia / ferma motore"));
                 menu.addItem (2005, L10n::tr ("Applica live"));
@@ -9870,6 +10424,8 @@ namespace
                 waited += 50;
             }
             log ((main->isEngineRunning() ? "PASS " : "FAIL ") + juce::String ("engine autostart"));
+            log (juce::String (countRouterProcesses() == 1 ? "PASS " : "FAIL ")
+                 + "exactly one engine process");
             setVisible (false);
             juce::Thread::sleep (300);
             log ((! isVisible() ? "PASS " : "FAIL ") + juce::String ("minimise to tray"));
@@ -9881,6 +10437,49 @@ namespace
             juce::Thread::sleep (300);
             log ((! main->isEngineRunning() ? "PASS " : "FAIL ")
                  + juce::String ("engine released on exit path"));
+
+            // Safety: a router started by somebody else (not this application's
+            // control channel) must never be terminated.  A renamed ping is a
+            // deterministic stand-in for such a foreign audio process.
+            {
+                const auto dummyDir = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                          .getChildFile ("nlmatrix_lifecycle_dummy");
+                dummyDir.createDirectory();
+                const auto dummyExe = dummyDir.getChildFile ("NLMatrixRouter.exe");
+                const auto systemPing = juce::File ("C:\\Windows\\System32\\ping.exe");
+                bool spawned = false;
+                juce::ChildProcess dummy;
+                if (dummyExe.existsAsFile()) dummyExe.deleteFile();
+                if (systemPing.existsAsFile() && systemPing.copyFileTo (dummyExe))
+                {
+                    juce::StringArray dummyArgs;
+                    dummyArgs.add (dummyExe.getFullPathName());
+                    dummyArgs.add ("-n");
+                    dummyArgs.add ("120");
+                    dummyArgs.add ("127.0.0.1");
+                    spawned = dummy.start (dummyArgs);
+                }
+                if (spawned)
+                {
+                    juce::Thread::sleep (300);
+                    const int before = countRouterProcesses();
+                    juce::String reason;
+                    const bool cleared = main->clearStrayRouterForStartForTest (reason);
+                    const int after = countRouterProcesses();
+                    log (juce::String (! cleared ? "PASS " : "FAIL ")
+                         + "foreign engine keeps running (start refused)");
+                    log (juce::String (before > 0 && after >= before ? "PASS " : "FAIL ")
+                         + "foreign engine not terminated");
+                    dummy.kill();
+                    dummy.waitForProcessToFinish (2000);
+                    dummyExe.deleteFile();
+                }
+                else
+                {
+                    log ("FAIL foreign engine fixture could not start");
+                }
+            }
+
             log ("SUMMARY lifecycle complete");
             juce::JUCEApplication::getInstance()->systemRequestedQuit();
         }
@@ -10073,9 +10672,43 @@ namespace
                                   || args.contains ("--layouttest") || args.contains ("--diagtest")
                                   || args.contains ("--devicetest") || args.contains ("--abouttest")
                                   || args.contains ("--preftest") || args.contains ("--traytest")
+                                  || args.contains ("--quickconnecttest")
                                   || args.contains ("--guiverify");
             if (auto* content = window->getMainComponent(); testMode)
                 content->setSessionPersistenceEnabled (false);
+
+            const int qcTestIndex = args.indexOf ("--quickconnecttest");
+            if (qcTestIndex >= 0)
+            {
+                if (auto* content = window->getMainComponent())
+                {
+                    auto argValue = [&args] (const juce::String& name) -> juce::String
+                    {
+                        const int index = args.indexOf (name);
+                        return (index >= 0 && index + 1 < args.size()) ? args[index + 1]
+                                                                      : juce::String();
+                    };
+                    MainComponent::QuickConnectChoice choice;
+                    choice.driver = argValue ("--qc-device");
+                    choice.channel1 = juce::jmax (1, argValue ("--qc-channel").getIntValue());
+                    choice.endpointIndex = juce::jlimit (0, 3, argValue ("--qc-endpoint").getIntValue());
+                    choice.bidirectional = args.contains ("--qc-bidirectional");
+                    choice.testTone = args.contains ("--qc-test-tone");
+                    const int holdSeconds = juce::jmax (2, argValue ("--qc-hold").getIntValue());
+                    const auto logPath = argValue ("--qc-log");
+                    const auto studioPath = argValue ("--qc-studio-profile");
+                    const auto presetDir = argValue ("--qc-preset-dir");
+                    content->runQuickConnectTest (
+                        logPath.isNotEmpty()
+                            ? juce::File (logPath)
+                            : juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                  .getChildFile ("nlmatrix_qc_gui.log"),
+                        choice, holdSeconds * 1000,
+                        studioPath.isNotEmpty() ? juce::File (studioPath) : juce::File(),
+                        presetDir.isNotEmpty() ? juce::File (presetDir) : juce::File());
+                    return;
+                }
+            }
 
             const int verifyIndex = args.indexOf ("--guiverify");
             if (verifyIndex >= 0)

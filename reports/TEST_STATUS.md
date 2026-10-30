@@ -3,8 +3,10 @@
 **Documento unico di stato test.** Aggiornare questo file soltanto dopo un test
 significativo; non creare report duplicati. Le evidenze restano nei log indicati.
 
-- **Ultimo aggiornamento:** 2026-10-29 23:55 (Europe/Rome)
-- **Build verificata (2026-10-29 23:55):** Alpha 0.5.0-alpha, driver DriverVer `10/29/2026,22.51.28.416` (image rebuilt, endpoint identity A4/A2), GUI selftest VM 67/67; endpoint audio verification `reports/endpoint_audio/2026-10-29/` (locale).
+- **Ultimo aggiornamento:** 2026-10-30 12:05 (Europe/Rome)
+- **Build verificata (2026-10-30 12:05):** Alpha 0.5.0-alpha, driver DriverVer `10/30/2026,0.38.34.360` (invariato), GUI selftest VM **79/79**, lifecycle **8/8**, Quick Connect **dalla GUI** con client reale PASS (`reports/automation/qc-gui4/`, evidenza `reports/quickconnect/2026-10-30-gui/`, locale). Criteri endpoint separati: `smoke` PASS (4 capture + driver ABI 4/4), `endpoints8` PASS (8 identità endpoint, mic=4 return=4), `endpoints` audio ancora bloccato da A22.
+- **Quick Connect (2026-10-30):** percorso reale GUI -> motore -> **NL Mic 1** -> client Windows (ffmpeg DirectShow): 12 s a RMS -15.1 dBFS, FFT 999.96 Hz, 0 gap, 0 splice, drift -3.3 ppm; preset `asio=FlexASIO channel0=2 endpoint0=0` (canale 3 scelto nel dialogo, non il canale 1). Il profilo Studio caricato prima è rimasto byte-identico e la last session ha conservato il progetto Studio. Una ripetizione precedente (`qc-gui3`) ha avuto GUI pulita ma 12 salti di fase nella cattura (classe A22): criterio audio mantenuto stretto, nessun retry automatico.
+- **Motori/processi (2026-10-30):** il lifecycle non termina più processi router non suoi; un motore estraneo resta attivo e l'avvio viene rifiutato con errore esplicito (lifecycle 8/8 PASS).
 - **Evidenze storiche (cleanup 2026-10-27):** i file di primo livello di `reports/MVP/` (screenshot/WAV/log 24-27/10) sono archiviati in `da_eliminare/2026-10-27-consolidation/reports-superseded/MVP-legacy/` (stessi nomi); restano attive le sottocartelle `reports/MVP/audio/`, `reports/MVP/gui_verify_20261027/`, `reports/MVP/DIAG_HOST_TEST/`. Accettazione e validazione FINAL4 sono in `da_eliminare/2026-10-27-consolidation/reports-superseded/` (`-FINAL4`); evidenze correnti: `reports/engine/final_acceptance_v5/`, `reports/engine/final5_markers/`. Il materiale archiviato è reversibile e consultabile.
 - **Laboratorio principale:** VM Windows 11 x64 con FlexASIO, ReaRoute ASIO x64,
   NLMatrix Virtual Audio Device (4 coppie), VB-CABLE diagnostico.

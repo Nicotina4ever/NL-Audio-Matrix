@@ -43,7 +43,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('smoke','guiselftest','guilifecycle','quickconnect','endpoints','matrix')]
+    [ValidateSet('smoke','guiselftest','guilifecycle','guiquickconnect','quickconnect','endpoints','endpoints8','matrix')]
     [string]$Suite = 'smoke',
     [string]$OutRoot = '',
     [string]$BuildDir = '',
@@ -123,6 +123,23 @@ function Get-SuiteSteps([string]$suite) {
             return @(@{ name = 'Quick Connect real client'; kind = 'script';
                        script = 'tools\vm\Run-QuickConnectRealClient.ps1'; args = @() })
         }
+        'guiquickconnect' {
+            # GUI-driven Quick Connect: the production GUI action starts the
+            # engine, a real Windows client captures NL Mic 1, and the Studio
+            # profile / preset invariants are checked in the same run.
+            return @(@{ name = 'Quick Connect from GUI + real client'; kind = 'script';
+                       script = 'tools\vm\Run-QuickConnectGuiRealClient.ps1';
+                       # Channel 3 (not the default channel 1) proves the GUI
+                       # selection reaches the preset and the engine project.
+                       args = @('-CaptureSeconds','12','-Channel','3') })
+        }
+        'endpoints8' {
+            # Enumeration only: all 8 NLMatrix endpoint identities must be
+            # present.  Audio verification of every endpoint stays the separate
+            # 'endpoints' suite (A22 makes it fail for now): the two criteria are
+            # deliberately not merged.
+            return @(@{ name = 'All 8 endpoints enumerated'; kind = 'guest-endpoints8' })
+        }
         'endpoints' {
             return @(@{ name = 'Endpoint audio verification'; kind = 'script';
                        script = 'tools\vm\Run-EndpointAudioVerification.ps1'; args = @('-Phase','Both') })
@@ -147,6 +164,14 @@ function Invoke-GuestDriverInfo {
     return $text
 }
 
+function Invoke-GuestEndpoints8 {
+    . $script:VmHelpers
+    # PnP endpoint identities (names as Windows shows them to users).  This is a
+    # read-only enumeration: it proves provisioning, not audio transport, and is
+    # the criterion distinct from the 'smoke' capture-only check.
+    return NL-Exec 'powershell -NoProfile -Command "(Get-PnpDevice -Class AudioEndpoint -PresentOnly).FriendlyName"' -TimeoutSec 120
+}
+
 function Run-ChildScript([string]$scriptRel, [string[]]$scriptArgs, [int]$timeoutSec, [string]$logPath) {
     $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     if (-not (Test-Path $ps)) { $ps = 'powershell.exe' }
@@ -154,11 +179,17 @@ function Run-ChildScript([string]$scriptRel, [string[]]$scriptArgs, [int]$timeou
     foreach ($a in $scriptArgs) { $argString += ' "' + $a + '"' }
     $p = Start-Process -FilePath $ps -ArgumentList $argString -RedirectStandardOutput $logPath `
                        -RedirectStandardError ($logPath + '.err') -NoNewWindow -PassThru
+    # Start-Process -PassThru only reports ExitCode when the process handle has
+    # been cached before waiting: otherwise ExitCode is $null and a passing child
+    # script would be scored as a failure.
+    $null = $p.Handle
     if (-not $p.WaitForExit($timeoutSec * 1000)) {
         try { & taskkill /PID $p.Id /T /F 2>$null | Out-Null } catch { }
         throw "TIMEOUT after ${timeoutSec}s"
     }
-    return $p.ExitCode
+    $p.Refresh()
+    if ($null -eq $p.ExitCode) { throw 'child exit code unavailable' }
+    return [int] $p.ExitCode
 }
 
 function New-RunDirectory([string]$suite) {
@@ -275,6 +306,22 @@ function Invoke-Run([string]$suite, [string]$runId, [string]$runDir, $manifest, 
                         $metrics['filters'] = "$($m.Groups[2].Value)/$($m.Groups[3].Value)"
                     } else { $status = 'FAIL'; $detail = 'driver info not readable' }
                 }
+                'guest-endpoints8' {
+                    $out = Invoke-GuestEndpoints8
+                    Set-Content -Path $logPath -Value $out -Encoding UTF8
+                    $mics = 0; $returns = 0
+                    for ($i = 1; $i -le 4; $i++) {
+                        if ($out -match ("(?m)^NL Mic $i \(NLMatrix")) { $mics++ }
+                        if ($out -match ("(?m)^NL Return $i \(NLMatrix")) { $returns++ }
+                    }
+                    $metrics['mics'] = $mics
+                    $metrics['returns'] = $returns
+                    $metrics['namedEndpoints'] = $mics + $returns
+                    if ($mics -ne 4 -or $returns -ne 4) {
+                        $status = 'FAIL'
+                        $detail = "expected 8 NLMatrix endpoints, found mics=$mics returns=$returns"
+                    }
+                }
                 'gui-selftest' {
                     $r = Invoke-GuiSelftest $runDir ([Math]::Min($remaining, 420))
                     $metrics['checksPassed'] = $r.passed
@@ -337,7 +384,7 @@ if ($Unattended) {
         $summaryPath = Join-Path $runDir 'summary.json'
         $result = 'ERROR'; $steps = @(); $summaryText = ''
         try {
-            if (-not $Force -and $Suite -in @('quickconnect','endpoints','matrix')) {
+            if (-not $Force -and $Suite -in @('quickconnect','guiquickconnect','endpoints','matrix')) {
                 $busy = Test-AudioSessionBusy
                 if ($busy) { throw "BUSY: $busy" }
             }

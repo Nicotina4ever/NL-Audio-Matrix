@@ -1,7 +1,42 @@
 # DEVELOPMENT_STATE — NL Audio Matrix
 
-**Updated:** 2026-10-29 23:55 (Europe/Rome)
+**Updated:** 2026-10-30 12:05 (Europe/Rome)
 **Objective:** complete the audio engine, real Focusrite validation and professional GUI without false PASSes.
+
+## Increment 2026-10-30 12:05 — Quick Connect verified from the GUI, preset isolation, engine safety
+
+All tests in the VMware VM; the host only compiles and analyses WAV files.
+
+- **Quick Connect is now parametric (A25).** The chip and the Routing menu open a dialog
+  that selects the ASIO device, one single channel (1-based) and the NL Mic endpoint,
+  plus the bidirectional option (NL Return -> ASIO output 1/2). A one-click item keeps the
+  canonical ASIO ch1 -> NL Mic 1. The generated project is written to its own preset
+  (`%APPDATA%\NL Audio Matrix\quickconnect\quick_connect_last.json`), never over the
+  loaded Studio profile: the Studio profile file stays byte-identical, the current
+  profile is not adopted/replaced, and while Quick Connect runs the last session file
+  keeps the **Studio** project, so a restart never loses it. Menu "Ripristina sessione
+  Studio" restores the backup captured before Quick Connect.
+- **GUI end-to-end proof (A26).** `--quickconnecttest` runs the same production action
+  from the GUI; `tools/vm/Run-QuickConnectGuiRealClient.ps1` then lets the guest ffmpeg
+  capture the NL Mic endpoint via DirectShow. Suite `guiquickconnect` run `qc-gui4` PASS:
+  GUI checks 9/9, 12 s capture at RMS -15.1 dBFS, FFT 999.96 Hz, 0 gaps, 0 splices,
+  drift -3.3 ppm, preset `asio=FlexASIO channel0=2 endpoint0=0` (channel 3, i.e. not the
+  default channel 1). An earlier run (`qc-gui3`) had a clean GUI but 12 phase jumps in the
+  capture (A22-class capture flakiness): the GUI criteria stay deterministic, the audio
+  criterion stays strict, and the coordinator does not auto-retry.
+- **Engine safety (A24).** The GUI no longer terminates NLMatrixRouter processes it does
+  not own: a leftover engine of this application is asked to stop through the graceful
+  `--control` channel, and an engine started by anything else is left running with an
+  explicit recoverable Error ("non lo interrompo"). Lifecycle suite 8/8: exactly one
+  engine process, engine alive in tray, resources released on exit, foreign engine keeps
+  running / not terminated (deterministic renamed-ping fixture).
+- **Endpoint criteria kept separate.** `smoke` = 4 capture endpoint names + driver ABI;
+  `endpoints8` = all 8 NLMatrix endpoint identities via PnP (mics=4 returns=4, PASS);
+  `endpoints` = per-endpoint audio verification, still blocked by A22. The smoke suite is
+  never reported as eight-endpoint verification.
+- **Coordinator (A23)**: new suites `guiquickconnect` and `endpoints8`; fixed
+  `Start-Process -PassThru` exit-code reporting (cache `$p.Handle` before waiting, else a
+  passing child looks like a failure). GUI selftest 79/79.
 
 ## Increment 2026-10-29 23:55 — all 8 NL endpoints: root cause, structural fix, real-audio verification
 
