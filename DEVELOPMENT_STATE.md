@@ -1,7 +1,38 @@
 # DEVELOPMENT_STATE — NL Audio Matrix
 
-**Updated:** 2026-10-30 12:05 (Europe/Rome)
+**Updated:** 2026-10-30 12:15 (Europe/Rome)
 **Objective:** complete the audio engine, real Focusrite validation and professional GUI without false PASSes.
+
+## Increment 2026-10-30 12:15 — Studio surface, operational mixer, magnetic patchbay
+
+All tests in the VMware VM; the host only compiles and analyses WAV files.
+
+- **Patchbay C4 (magnetic cables).** Input connectors are magnetic drop targets with a
+  46 px snap radius (independent of zoom): dragging from a source/bus port draws the
+  preview already attached to the nearest connector, highlights the target ring, hover
+  shows the connector that would snap, ESC cancels a draft and clears the selection, and
+  a double-click on empty canvas opens the add-source/destination/bus menu. Zoom and pan
+  were kept. Verified by the canvas interaction test inside the GUI selftest.
+- **Mixer strips are model-backed (C5).** Each strip now has gain, pan (sources with
+  L/C/R readout), mute, solo, polarity Ø (sources), enable ON/OFF (all kinds), monitor
+  MON and mix-minus MM with the excluded-source count (destinations). Controls go through
+  the same model + `applyProfile()` path as the left panel, so edits are saved and appear
+  in the patchbay; mix-minus opens the source picker anchored to the strip. Seven selftest
+  checks prove the callbacks reach the model.
+- **Studio surface (A27).** New "Studio" chip and Routing menu entry open
+  `studio_panel.h`: return paths **NL Return 1..4 -> ASIO out 1/2** created/removed with
+  one click (loopback source + asio-out destination + route), bus list with route count
+  and "connect to destination", per-destination Monitor toggles and Mix-minus picker.
+  Everything is a normal project edit (profile, patchbay and mixer stay in sync). New
+  suite `guistudio` PASS 4/4; the selftest adds 8 Studio checks incl. the profile
+  round-trip of mix-minus.
+- **Hidden tray regression fixed.** The selftest's tray test appended its PASS/FAIL lines
+  after the SUMMARY, so the coordinator never counted them: "engine survives window hide"
+  had been failing silently. Root cause: a selftest fixture profile was deleted while the
+  model still referenced it, and `saveLiveProfile()` then refused to start the engine.
+  Fixed both sides: the fixture restores `currentProfileFile`, a profile whose folder
+  disappeared no longer blocks engine start (stale reference dropped), and the coordinator
+  now counts tray lines too. GUI selftest **98/98**, tray failures 0; lifecycle 8/8.
 
 ## Increment 2026-10-30 12:05 — Quick Connect verified from the GUI, preset isolation, engine safety
 

@@ -43,7 +43,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('smoke','guiselftest','guilifecycle','guiquickconnect','quickconnect','endpoints','endpoints8','matrix')]
+    [ValidateSet('smoke','guiselftest','guilifecycle','guistudio','guiquickconnect','quickconnect','endpoints','endpoints8','matrix')]
     [string]$Suite = 'smoke',
     [string]$OutRoot = '',
     [string]$BuildDir = '',
@@ -118,6 +118,9 @@ function Get-SuiteSteps([string]$suite) {
         }
         'guilifecycle' {
             return @(@{ name = 'GUI lifecycle + tray'; kind = 'gui-lifecycle' })
+        }
+        'guistudio' {
+            return @(@{ name = 'Studio surface'; kind = 'gui-studiotest' })
         }
         'quickconnect' {
             return @(@{ name = 'Quick Connect real client'; kind = 'script';
@@ -268,8 +271,29 @@ function Invoke-GuiSelftest([string]$runDir, [int]$timeoutSec) {
     }
     if (-not $m.Success) { throw 'selftest SUMMARY not found' }
     $passed = [int]$m.Groups[1].Value; $total = [int]$m.Groups[2].Value
-    $status = if ($passed -eq $total) { 'PASS' } else { 'FAIL' }
-    return [pscustomobject]@{ passed = $passed; total = $total; status = $status }
+    # The tray test appends its own PASS/FAIL lines after the SUMMARY block:
+    # count them too, otherwise a tray regression would be hidden.
+    $extraFail = ([regex]::Matches(($selftest + "`n" + $text), '(?m)^FAIL ')).Count
+    $status = if ($passed -eq $total -and $extraFail -eq 0) { 'PASS' } else { 'FAIL' }
+    return [pscustomobject]@{ passed = $passed; total = $total; failed = $extraFail; status = $status }
+}
+
+function Invoke-GuiStudioTest([string]$runDir, [int]$timeoutSec) {
+    . $script:VmHelpers
+    $log = Join-Path $runDir 'logs\gui-studio.log'
+    Deploy-SnapshotToGuest
+    $guestLog = 'C:\Users\NLMatrix\AppData\Local\Temp\nlmatrix_studiotest.log'
+    NL-Exec ('del /f /q "' + $guestLog + '" 2>nul & echo CLEARED') -TimeoutSec 60 | Out-Null
+    $text = NL-Exec 'C:\NLMatrix\NLMatrixUI.exe --studiotest' -TimeoutSec $timeoutSec
+    $report = ''
+    try { $report = NL-Exec ('type "' + $guestLog + '"') -TimeoutSec 60 } catch { }
+    Set-Content -Path $log -Value ($text + "`n" + $report) -Encoding UTF8
+    $pass = ([regex]::Matches($report, '(?m)^PASS ')).Count
+    $fail = ([regex]::Matches($report, '(?m)^FAIL ')).Count
+    $complete = $report -match 'SUMMARY studio complete'
+    $metrics = [ordered]@{ pass = $pass; fail = $fail; studioComplete = $complete }
+    $status = if ($fail -eq 0 -and $pass -ge 4 -and $complete) { 'PASS' } else { 'FAIL' }
+    return [pscustomobject]@{ status = $status; metrics = $metrics }
 }
 
 function Invoke-Run([string]$suite, [string]$runId, [string]$runDir, $manifest, [int]$timeoutMinutes) {
@@ -326,10 +350,16 @@ function Invoke-Run([string]$suite, [string]$runId, [string]$runDir, $manifest, 
                     $r = Invoke-GuiSelftest $runDir ([Math]::Min($remaining, 420))
                     $metrics['checksPassed'] = $r.passed
                     $metrics['checksTotal'] = $r.total
+                    $metrics['trayFailures'] = $r.failed
                     if ($r.status -ne 'PASS') { $status = 'FAIL' }
                 }
                 'gui-lifecycle' {
                     $r = Invoke-GuiLifecycle $runDir ([Math]::Min($remaining, 420))
+                    foreach ($k in $r.metrics.Keys) { $metrics[$k] = $r.metrics[$k] }
+                    if ($r.status -ne 'PASS') { $status = 'FAIL' }
+                }
+                'gui-studiotest' {
+                    $r = Invoke-GuiStudioTest $runDir ([Math]::Min($remaining, 420))
                     foreach ($k in $r.metrics.Keys) { $metrics[$k] = $r.metrics[$k] }
                     if ($r.status -ne 'PASS') { $status = 'FAIL' }
                 }

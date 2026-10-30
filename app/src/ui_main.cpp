@@ -1060,13 +1060,43 @@ namespace
                         start = { src->getRight(), src->getCentreY() };
                 if (draftMode == DraftMode::Reconnect)
                     start = draftStartScreen;
-                drawCable (g, start, draftPoint, Palette::cyan, 3.0f);
+                // Magnetic preview: the cable follows the pointer but is drawn
+                // already attached to the connector it would snap to.
+                const auto target = snapKey.isNotEmpty() ? snapPoint : draftPoint;
+                drawCable (g, start, target, Palette::cyan, 3.0f);
+                if (snapKey.isNotEmpty())
+                {
+                    const juce::Rectangle<float> ring ((float) snapPoint.x - 11.0f,
+                                                      (float) snapPoint.y - 11.0f, 22.0f, 22.0f);
+                    g.setColour (Palette::cyan.withAlpha (0.18f));
+                    g.fillEllipse (ring);
+                    g.setColour (Palette::cyan);
+                    g.drawEllipse (ring, 2.0f);
+                }
+            }
+            else if (hoveredInputKey.isNotEmpty())
+            {
+                const juce::String id = idOf (hoveredInputKey);
+                if (const auto* r = destinationNodeRect (id))
+                {
+                    g.setColour (Palette::magenta.withAlpha (0.8f));
+                    g.drawEllipse (juce::Rectangle<float> ((float) r->getX() - 10.0f,
+                                                          (float) r->getCentreY() - 10.0f,
+                                                          20.0f, 20.0f), 2.0f);
+                }
+                else if (const auto* b = nodeRect ("bus", id))
+                {
+                    g.setColour (Palette::magenta.withAlpha (0.8f));
+                    g.drawEllipse (juce::Rectangle<float> ((float) b->getX() - 10.0f,
+                                                          (float) b->getCentreY() - 10.0f,
+                                                          20.0f, 20.0f), 2.0f);
+                }
             }
 
             g.setColour (Palette::muted.withAlpha (0.8f));
             g.setFont (11.5f);
-            g.drawText (L10n::tr ("Trascina nodi | trascina dai connettori | clic sul cavo + Canc | rotella zoom | centrale pan",
-                                  "Drag nodes | drag ports | click cable + Del | wheel zoom | middle pan"),
+            g.drawText (L10n::tr ("Trascina nodi | trascina dai connettori (snap magnetico) | clic sul cavo + Canc | rotella zoom | centrale pan | ESC annulla | doppio clic: aggiungi nodo",
+                                  "Drag nodes | drag ports (magnetic snap) | click cable + Del | wheel zoom | middle pan | ESC cancels | double-click: add node"),
                         getLocalBounds().removeFromTop (18).reduced (8, 0),
                         juce::Justification::centredLeft);
         }
@@ -1196,6 +1226,17 @@ namespace
             if (draftMode != DraftMode::None)
             {
                 draftPoint = e.getPosition();
+                juce::String key;
+                juce::Point<int> point;
+                if (inputPortAt (e.getPosition(), key, point))
+                {
+                    snapKey = key;
+                    snapPoint = point;
+                }
+                else
+                {
+                    snapKey.clear();
+                }
                 repaint();
                 return;
             }
@@ -1222,57 +1263,20 @@ namespace
             }
             if (draftMode == DraftMode::Create)
             {
-                for (const auto& d : destinations)
-                    if (const auto* r = nodeRect ("destination", d.id))
-                        if (juce::Rectangle<float> ((float) r->getX() - 8.0f,
-                                                    (float) r->getCentreY() - 8.0f,
-                                                    16.0f, 16.0f).contains (e.position))
-                        {
-                            if (onConnect)
-                            {
-                                ++testConnectCount;
-                                onConnect (draftSource, d.id);
-                            }
-                            break;
-                        }
-                for (const auto& b : buses)
-                    if (const auto* r = nodeRect ("bus", b.id))
-                        if (juce::Rectangle<float> ((float) r->getX() - 8.0f,
-                                                    (float) r->getCentreY() - 8.0f,
-                                                    16.0f, 16.0f).contains (e.position))
-                        {
-                            if (onConnect)
-                            {
-                                ++testConnectCount;
-                                onConnect (draftSource, b.id);
-                            }
-                            break;
-                        }
+                // Magnetic drop: inside the connector or within snapRadius.
+                const auto target = inputTargetIdAt (e.getPosition());
+                if (target.isNotEmpty() && onConnect)
+                {
+                    ++testConnectCount;
+                    onConnect (draftSource, target);
+                }
             }
             else if (draftMode == DraftMode::Reconnect && reconnectRoute >= 0)
             {
-                for (const auto& d : destinations)
-                    if (const auto* r = nodeRect ("destination", d.id))
-                        if (juce::Rectangle<float> ((float) r->getX() - 8.0f,
-                                                    (float) r->getCentreY() - 8.0f,
-                                                    16.0f, 16.0f).contains (e.position))
-                        {
-                            if (onReconnect)
-                                onReconnect (routes[(size_t) reconnectRoute].sourceId,
-                                             routes[(size_t) reconnectRoute].destinationId, d.id);
-                            break;
-                        }
-                for (const auto& b : buses)
-                    if (const auto* r = nodeRect ("bus", b.id))
-                        if (juce::Rectangle<float> ((float) r->getX() - 8.0f,
-                                                    (float) r->getCentreY() - 8.0f,
-                                                    16.0f, 16.0f).contains (e.position))
-                        {
-                            if (onReconnect)
-                                onReconnect (routes[(size_t) reconnectRoute].sourceId,
-                                             routes[(size_t) reconnectRoute].destinationId, b.id);
-                            break;
-                        }
+                const auto target = inputTargetIdAt (e.getPosition());
+                if (target.isNotEmpty() && onReconnect)
+                    onReconnect (routes[(size_t) reconnectRoute].sourceId,
+                                 routes[(size_t) reconnectRoute].destinationId, target);
             }
             else if (dragNodeKey.isNotEmpty())
             {
@@ -1286,11 +1290,28 @@ namespace
             }
             draftMode = DraftMode::None;
             reconnectRoute = -1;
+            snapKey.clear();
             repaint();
         }
 
         bool keyPressed (const juce::KeyPress& key) override
         {
+            if (key == juce::KeyPress::escapeKey)
+            {
+                const bool hadSomething = draftMode != DraftMode::None || selectedCable >= 0
+                                          || ! selectedNodes.empty();
+                draftMode = DraftMode::None;
+                reconnectRoute = -1;
+                snapKey.clear();
+                selectedCable = -1;
+                selectedNodes.clear();
+                if (hadSomething)
+                {
+                    repaint();
+                    return true;
+                }
+                return false;
+            }
             if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
             {
                 if (selectedCable >= 0 && onDeleteRoute)
@@ -1316,21 +1337,30 @@ namespace
         {
             if (panning || draftMode != DraftMode::None || dragNodeKey.isNotEmpty())
                 return;
+            juce::String portKey;
+            juce::Point<int> portPoint;
+            const bool portHit = inputPortAt (e.getPosition(), portKey, portPoint);
+            if (portKey != hoveredInputKey)
+            {
+                hoveredInputKey = portKey;
+                repaint();
+            }
             const int cable = cableAt (e.getPosition());
             if (cable != hoveredCable)
             {
                 hoveredCable = cable;
-                setMouseCursor (cable >= 0 ? juce::MouseCursor::PointingHandCursor
-                                           : juce::MouseCursor::NormalCursor);
                 repaint();
             }
+            setMouseCursor (cable >= 0 || portHit ? juce::MouseCursor::PointingHandCursor
+                                                  : juce::MouseCursor::NormalCursor);
         }
 
         void mouseExit (const juce::MouseEvent&) override
         {
-            if (hoveredCable >= 0)
+            if (hoveredCable >= 0 || hoveredInputKey.isNotEmpty())
             {
                 hoveredCable = -1;
+                hoveredInputKey.clear();
                 setMouseCursor (juce::MouseCursor::NormalCursor);
                 repaint();
             }
@@ -1349,8 +1379,15 @@ namespace
         void mouseDoubleClick (const juce::MouseEvent& e) override
         {
             const auto key = nodeAt (e.getPosition());
-            if (key.isNotEmpty() && onEditNode)
-                onEditNode (kindOf (key), idOf (key));
+            if (key.isNotEmpty())
+            {
+                if (onEditNode)
+                    onEditNode (kindOf (key), idOf (key));
+                return;
+            }
+            // Double-click on empty canvas is the quickest way to add a node.
+            if (cableAt (e.getPosition()) < 0)
+                showContextMenu (e);
         }
 
         void showContextMenu (const juce::MouseEvent& e)
@@ -1540,6 +1577,54 @@ namespace
             report.add ((testConnectCount > connectsBefore ? "PASS " : "FAIL ")
                         + juce::String ("canvas mouse connect"));
 
+            // C4 magnetic patchbay: releasing 26 px away from the connector
+            // centre (outside the old 8 px hit box) must still connect, and the
+            // drag preview must already show the snapped connector.
+            if (! nodes.empty())
+            {
+                const auto* srcRect = nodeRect ("source", sources.front().id);
+                const auto* dstRect = nodeRect ("destination", destinations.front().id);
+                if (srcRect != nullptr && dstRect != nullptr)
+                {
+                    const juce::Point<float> out ((float) srcRect->getRight(),
+                                                  (float) srcRect->getCentreY());
+                    const juce::Point<float> nearPort ((float) dstRect->getX() + 26.0f,
+                                                       (float) dstRect->getCentreY() + 18.0f);
+                    const int before = testConnectCount;
+                    mouseDown (event (out, false));
+                    mouseDrag (event (nearPort, true));
+                    report.add ((snapKey.isNotEmpty() ? "PASS " : "FAIL ")
+                                + juce::String ("canvas magnetic preview snaps to connector"));
+                    mouseUp (event (nearPort, true));
+                    report.add ((testConnectCount > before ? "PASS " : "FAIL ")
+                                + juce::String ("canvas magnetic drop connects"));
+                }
+            }
+
+            // ESC cancels a cable draft without creating a route.
+            if (! nodes.empty())
+            {
+                const auto* srcRect = nodeRect ("source", sources.front().id);
+                const auto* dstRect = nodeRect ("destination", destinations.front().id);
+                if (srcRect != nullptr && dstRect != nullptr)
+                {
+                    const juce::Point<float> out ((float) srcRect->getRight(),
+                                                  (float) srcRect->getCentreY());
+                    const juce::Point<float> in ((float) dstRect->getX(),
+                                                 (float) dstRect->getCentreY());
+                    const int before = testConnectCount;
+                    mouseDown (event (out, false));
+                    mouseDrag (event (in, true));
+                    const bool draftStarted = draftMode != DraftMode::None;
+                    keyPressed (juce::KeyPress (juce::KeyPress::escapeKey));
+                    const bool cancelled = draftMode == DraftMode::None;
+                    mouseUp (event (in, true));
+                    report.add ((draftStarted && cancelled && testConnectCount == before
+                                     ? "PASS " : "FAIL ")
+                                + juce::String ("canvas ESC cancels cable draft"));
+                }
+            }
+
             if (! nodes.empty())
             {
                 const auto* fresh = nodeRect ("source", sources.front().id);
@@ -1601,6 +1686,46 @@ namespace
             juce::Point<float> world;
             bool enabled = true, hasIn = false, hasOut = false;
         };
+
+        // C4 magnetic patchbay: an input connector is a drop target when the
+        // pointer lands on it or within this radius, so a cable snaps to the
+        // nearest connector instead of demanding pixel-perfect aim.
+        static constexpr float snapRadiusPx = 46.0f;
+        juce::String snapKey;
+        juce::Point<int> snapPoint;
+        juce::String hoveredInputKey;
+
+        bool inputPortAt (juce::Point<int> p, juce::String& outKey, juce::Point<int>& outPoint) const
+        {
+            float best = snapRadiusPx;
+            bool found = false;
+            auto consider = [&] (const juce::String& key, const juce::Rectangle<int>& r)
+            {
+                const juce::Point<float> centre ((float) r.getX(), (float) r.getCentreY());
+                const float distance = centre.getDistanceFrom (p.toFloat());
+                if (distance <= best)
+                {
+                    best = distance;
+                    outKey = key;
+                    outPoint = { (int) centre.x, (int) centre.y };
+                    found = true;
+                }
+            };
+            for (const auto& d : destinations)
+                if (const auto* r = nodeRect ("destination", d.id))
+                    consider ("D:" + d.id, *r);
+            for (const auto& b : buses)
+                if (const auto* r = nodeRect ("bus", b.id))
+                    consider ("B:" + b.id, *r);
+            return found;
+        }
+
+        juce::String inputTargetIdAt (juce::Point<int> p) const
+        {
+            juce::String key;
+            juce::Point<int> point;
+            return inputPortAt (p, key, point) ? idOf (key) : juce::String();
+        }
 
         void rebuild()
         {
@@ -2711,6 +2836,7 @@ namespace
     #include "diagnostics_panel.h"
     #include "preferences_panel.h"
     #include "mixer_panel.h"
+    #include "studio_panel.h"
 
     // Shared PNG writer for the GUI verification screenshots.
     static void writePngImage (const juce::Image& image, const juce::File& file)
@@ -3478,13 +3604,14 @@ namespace
             // devices/formats, mixer and diagnostics move into clearly
             // distinguishable, on-demand sections instead of occupying the
             // main screen permanently.
-            for (auto* chip : { &sectionRouting, &sectionMixer, &sectionQuickConnect, &sectionDevices, &sectionDiagnostics })
+            for (auto* chip : { &sectionRouting, &sectionStudio, &sectionMixer, &sectionQuickConnect, &sectionDevices, &sectionDiagnostics })
             {
                 addAndMakeVisible (*chip);
                 chip->setColour (juce::TextButton::buttonColourId, Palette::panelRaised);
                 chip->setColour (juce::TextButton::buttonOnColourId, Palette::violet.withAlpha (0.35f));
             }
             sectionRouting.setButtonText (L10n::tr ("Routing", "Routing"));
+            sectionStudio.setButtonText (L10n::tr ("Studio", "Studio"));
             sectionMixer.setButtonText (L10n::tr ("Mixer", "Mixer"));
             sectionDevices.setButtonText (L10n::tr ("Dispositivi", "Devices"));
             sectionDiagnostics.setButtonText (L10n::tr ("Diagnostica", "Diagnostics"));
@@ -3497,6 +3624,7 @@ namespace
                 sectionRouting.setToggleState (true, juce::dontSendNotification);
                 setStatus (L10n::tr ("Routing: patchbay centrale", "Routing: central patchbay"));
             };
+            sectionStudio.onClick = [this] { openStudio(); };
             sectionMixer.onClick = [this] { openMixer(); };
             sectionDevices.onClick = [this] { setDevicesPanelVisible (! devicesPanelVisible); };
             sectionDiagnostics.onClick = [this] { openDiagnostics(); };
@@ -4071,7 +4199,19 @@ namespace
             // Quick Connect must never write its generated project over the
             // Studio profile that was loaded before it.
             if (currentProfileFile != juce::File() && ! liveProjectIsQuickConnect)
+            {
+                // A profile whose folder disappeared (deleted temp profile, removed
+                // drive) must never block the engine: keep the temp profile and
+                // drop the stale reference instead of failing the start.
+                if (! currentProfileFile.getParentDirectory().isDirectory())
+                {
+                    logLine ("profile folder missing, dropping stale profile reference: "
+                             + currentProfileFile.getFullPathName());
+                    currentProfileFile = juce::File();
+                    return true;
+                }
                 return writeProfile (currentProfileFile, error);
+            }
             return true;
         }
 
@@ -5110,6 +5250,7 @@ namespace
                 const auto savedQcBidirectional = qcBidirectional;
                 const auto savedAsioForQc = asioBox.getText();
                 const auto savedProfileNameForQc = profileName.getText();
+                const auto savedCurrentProfileForQc = currentProfileFile;
 
                 profileName.setText ("Studio Take 1", juce::dontSendNotification);
                 asioBox.setText ("NL Selftest ASIO", juce::dontSendNotification);
@@ -5176,11 +5317,121 @@ namespace
                 qcBidirectional = savedQcBidirectional;
                 asioBox.setText (savedAsioForQc, juce::dontSendNotification);
                 profileName.setText (savedProfileNameForQc, juce::dontSendNotification);
+                currentProfileFile = savedCurrentProfileForQc;
                 studioSessionBackup = juce::var();
                 studioSessionBackupName.clear();
                 studioSessionBackupFile = juce::File();
                 liveProjectIsQuickConnect = false;
                 qcRoot.deleteRecursively();
+            }
+
+            // Mixer strip controls (A28) are the same model edits as the left
+            // panel: pan, polarity, enable, monitor and mix-minus state.
+            {
+                configureMixer();
+                if (! sources.empty() && ! destinations.empty())
+                {
+                    const auto sourceId = sources.front().id;
+                    const auto destinationId = destinations.front().id;
+                    mixerPanel.onPan ("source", sourceId, -0.5f);
+                    check (std::abs (sources.front().pan + 0.5f) < 0.001f,
+                           "mixer pan reaches the source model");
+                    mixerPanel.onPolarity ("source", sourceId, true);
+                    check (sources.front().polarity, "mixer polarity reaches the source model");
+                    mixerPanel.onEnabled ("source", sourceId, false);
+                    check (! sources.front().enabled, "mixer enable reaches the source model");
+                    mixerPanel.onMonitor ("destination", destinationId, true);
+                    check (destinations.front().monitor, "mixer monitor reaches the destination model");
+                    mixerPanel.onEnabled ("destination", destinationId, false);
+                    check (! destinations.front().enabled, "mixer enable reaches the destination model");
+                    for (auto& d : destinations)
+                        if (d.id == destinationId)
+                            d.mixMinus = { sourceId };
+                    check (! destinations.front().mixMinus.empty(),
+                           "mixer mix-minus state is model backed");
+                    for (auto& s : sources)
+                        if (s.id == sourceId)
+                        {
+                            s.pan = 0.0f;
+                            s.polarity = false;
+                            s.enabled = true;
+                        }
+                    for (auto& d : destinations)
+                        if (d.id == destinationId)
+                        {
+                            d.monitor = false;
+                            d.enabled = true;
+                            d.mixMinus.clear();
+                        }
+                    refreshAll();
+                }
+            }
+
+            // Studio surface (A27): return paths, buses, monitoring and mix-minus
+            // are plain project edits on the existing model (no second engine).
+            {
+                const auto savedSources = sources;
+                const auto savedDestinations = destinations;
+                const auto savedBuses = buses;
+                const auto savedRoutes = routes;
+                const int sourcesBefore = (int) sources.size();
+                const int destinationsBefore = (int) destinations.size();
+                const int routesBefore = (int) routes.size();
+                toggleStudioReturn (0);
+                check (studioState().returns.front().active,
+                       "studio return path NL Return 1 -> ASIO out is active");
+                check ((int) sources.size() == sourcesBefore + 1,
+                       "studio return path creates the NL Return loopback source");
+                check ((int) destinations.size() == destinationsBefore + 1,
+                       "studio return path creates the ASIO out destination");
+                check ((int) routes.size() == routesBefore + 1,
+                       "studio return path adds exactly one route");
+                const auto studioDestinationId = studioState().destinations.back().id;
+                setStudioMonitor (studioDestinationId, true);
+                check (studioState().destinations.back().monitor,
+                       "studio monitor toggle reaches the model");
+                toggleStudioReturn (0);
+                check (! studioState().returns.front().active,
+                       "studio return path can be removed");
+
+                const int busCountBefore = (int) buses.size();
+                addNodeFromCanvas ("bus");
+                check ((int) buses.size() == busCountBefore + 1, "studio adds a bus");
+                if (! buses.empty() && ! destinations.empty())
+                {
+                    connectFromPatchbay (buses.back().id, destinations.front().id);
+                    bool routed = false;
+                    for (const auto& r : routes)
+                        if ((r.sourceId == buses.back().id
+                             || r.sourceId == "bus-src-" + buses.back().id)
+                            && r.destinationId == destinations.front().id)
+                            routed = true;
+                    check (routed, "studio routes a bus to a destination");
+
+                    for (auto& d : destinations)
+                        if (d.id == destinations.front().id && ! sources.empty())
+                            d.mixMinus = { sources.front().id };
+                    const auto studioProfile = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                                   .getChildFile ("nlmatrix_selftest_studio.json");
+                    juce::String studioProfileError;
+                    const bool studioProfileWrote = writeProfile (studioProfile, studioProfileError);
+                    check (studioProfileWrote, "studio profile fixture written");
+                    const bool studioProfileReloaded = readProfile (studioProfile, studioProfileError);
+                    bool mixMinusKept = false;
+                    for (const auto& d : destinations)
+                        if (d.id == destinations.front().id)
+                            mixMinusKept = ! d.mixMinus.empty();
+                    check (studioProfileReloaded && mixMinusKept,
+                           "studio mix-minus survives a profile round-trip");
+                }
+                // Studio edits are a self-contained check: restore the fixture
+                // project so the tray/engine tests below see the same model as
+                // before this block.
+                sources = savedSources;
+                destinations = savedDestinations;
+                buses = savedBuses;
+                routes = savedRoutes;
+                refreshAll();
             }
 
             // Restore the operator's real preferences (or leave a clean default
@@ -5233,6 +5484,29 @@ namespace
 
         // Used by the menu to enable/disable "restore Studio session".
         bool canRestoreStudioSession() const { return hasStudioSessionBackup(); }
+        juce::String engineLastErrorForTest() const { return engineLastError; }
+
+        // --- deterministic hooks for the Studio UI test (--studiotest) --------
+        void openStudioForTest() { openStudio(); }
+        bool isStudioWindowOpenForTest() const { return studioWindow != nullptr; }
+        int studioActiveReturnCountForTest() const
+        {
+            int count = 0;
+            for (const auto& r : studioState().returns)
+                if (r.active) ++count;
+            return count;
+        }
+        void toggleStudioReturnForTest (int endpointIndex) { toggleStudioReturn (endpointIndex); }
+        void closeStudioWindowForTest()
+        {
+            if (studioWindow == nullptr)
+                return;
+            auto* window = studioWindow;
+            studioWindow = nullptr;
+            studioContent = nullptr;
+            window->onClose = nullptr;
+            delete window;
+        }
 
         // Deterministic GUI-driven Quick Connect verification used by the local
         // test coordinator (--quickconnecttest).  It runs the same production
@@ -5930,10 +6204,11 @@ namespace
             if (barHeight > 0)
                 top.removeFromTop (4);
             auto chipRow = top.removeFromTop (26);
-            const int chipWidth = compact ? 84 : 104;
+            const int chipWidth = compact ? 78 : 96;
             sectionRouting.setBounds (chipRow.removeFromLeft (chipWidth));
+            sectionStudio.setBounds (chipRow.removeFromLeft (chipWidth));
             sectionMixer.setBounds (chipRow.removeFromLeft (chipWidth));
-            sectionQuickConnect.setBounds (chipRow.removeFromLeft (chipWidth + 22));
+            sectionQuickConnect.setBounds (chipRow.removeFromLeft (chipWidth + 20));
             sectionDevices.setBounds (chipRow.removeFromLeft (chipWidth));
             sectionDiagnostics.setBounds (chipRow.removeFromLeft (chipWidth + 4));
 
@@ -6805,6 +7080,57 @@ namespace
                 safe->setStatus (L10n::tr ("Dispositivo aggiunto: ", "Device added: ") + item.name);
             };
         }
+        // Mix-minus picker used by the destination mixer strip: toggles which
+        // sources are excluded from that destination (anti-feedback / N-1 mix).
+        void showMixMinusMenu (const juce::String& destinationId, juce::Component* anchor)
+        {
+            Destination* dest = nullptr;
+            for (auto& d : destinations)
+                if (d.id == destinationId) dest = &d;
+            if (dest == nullptr)
+                return;
+            std::vector<juce::String> candidates;
+            juce::PopupMenu menu;
+            menu.addSectionHeader (L10n::tr ("Mix-minus: escludi dalla destinazione",
+                                             "Mix-minus: exclude from destination"));
+            for (const auto& s : sources)
+            {
+                if (s.type == "bus")
+                    continue;
+                const bool excluded = std::find (dest->mixMinus.begin(), dest->mixMinus.end(), s.id)
+                                      != dest->mixMinus.end();
+                candidates.push_back (s.id);
+                menu.addItem ((int) candidates.size(), s.name, ! s.name.isEmpty(), excluded);
+            }
+            if (candidates.empty())
+                menu.addItem (1, L10n::tr ("Nessuna sorgente disponibile", "No source available"),
+                              false, false);
+            juce::Component::SafePointer<MainComponent> safe (this);
+            menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (anchor),
+                                [safe, destinationId, candidates] (int result)
+                                {
+                                    if (safe == nullptr || result <= 0
+                                        || result > (int) candidates.size())
+                                        return;
+                                    const auto sourceId = candidates[(size_t) result - 1];
+                                    for (auto& d : safe->destinations)
+                                        if (d.id == destinationId)
+                                        {
+                                            const auto it = std::find (d.mixMinus.begin(),
+                                                                       d.mixMinus.end(), sourceId);
+                                            if (it != d.mixMinus.end())
+                                                d.mixMinus.erase (it);
+                                            else
+                                                d.mixMinus.push_back (sourceId);
+                                            break;
+                                        }
+                                    safe->refreshAll();
+                                    safe->applyProfile();
+                                    safe->setStatus (L10n::tr ("Mix-minus aggiornato",
+                                                               "Mix-minus updated"));
+                                });
+        }
+
         void configureMixer()
         {
             if (mixerConfigured) return;
@@ -6814,11 +7140,49 @@ namespace
                 std::vector<MixerStripInfo> infos;
                 for (const auto& s : sources)
                     if (s.type != "bus")
-                        infos.push_back ({ s.id, s.name, "source", s.gainDb, s.muted, s.solo, s.enabled });
+                    {
+                        MixerStripInfo info;
+                        info.id = s.id;
+                        info.name = s.name;
+                        info.kind = "source";
+                        info.gainDb = s.gainDb;
+                        info.pan = s.pan;
+                        info.muted = s.muted;
+                        info.solo = s.solo;
+                        info.enabled = s.enabled;
+                        info.polarity = s.polarity;
+                        info.hasPan = true;
+                        info.hasPolarity = true;
+                        infos.push_back (info);
+                    }
                 for (const auto& b : buses)
-                    infos.push_back ({ b.id, b.name, "bus", b.gainDb, b.muted, b.solo, b.enabled });
+                {
+                    MixerStripInfo info;
+                    info.id = b.id;
+                    info.name = b.name;
+                    info.kind = "bus";
+                    info.gainDb = b.gainDb;
+                    info.muted = b.muted;
+                    info.solo = b.solo;
+                    info.enabled = b.enabled;
+                    infos.push_back (info);
+                }
                 for (const auto& d : destinations)
-                    infos.push_back ({ d.id, d.name, "destination", d.gainDb, d.muted, d.solo, d.enabled });
+                {
+                    MixerStripInfo info;
+                    info.id = d.id;
+                    info.name = d.name;
+                    info.kind = "destination";
+                    info.gainDb = d.gainDb;
+                    info.muted = d.muted;
+                    info.solo = d.solo;
+                    info.enabled = d.enabled;
+                    info.monitor = d.monitor;
+                    info.mixMinusCount = (int) d.mixMinus.size();
+                    info.hasMonitor = true;
+                    info.hasMixMinus = true;
+                    infos.push_back (info);
+                }
                 return infos;
             };
             mixerPanel.getLevels = [this] (const juce::String& id)
@@ -6851,6 +7215,47 @@ namespace
                 refreshAll();
                 applyProfile();
             };
+            // Studio strip controls: pan/polarity (sources), enable (all),
+            // monitor + mix-minus (destinations).  Each edit goes through the
+            // same model + live apply path as the left-panel editors.
+            mixerPanel.onPan = [this] (const juce::String& kind, const juce::String& id, float pan)
+            {
+                if (kind == "source")
+                    for (auto& s : sources)
+                        if (s.id == id) s.pan = juce::jlimit (-1.0f, 1.0f, pan);
+                refreshAll();
+                applyProfile();
+            };
+            mixerPanel.onPolarity = [this] (const juce::String& kind, const juce::String& id, bool inverted)
+            {
+                if (kind == "source")
+                    for (auto& s : sources)
+                        if (s.id == id) s.polarity = inverted;
+                refreshAll();
+                applyProfile();
+            };
+            mixerPanel.onEnabled = [this] (const juce::String& kind, const juce::String& id, bool enabled)
+            {
+                if (kind == "source") for (auto& s : sources) if (s.id == id) s.enabled = enabled;
+                if (kind == "bus") for (auto& b : buses) if (b.id == id) b.enabled = enabled;
+                if (kind == "destination") for (auto& d : destinations) if (d.id == id) d.enabled = enabled;
+                refreshAll();
+                applyProfile();
+            };
+            mixerPanel.onMonitor = [this] (const juce::String& kind, const juce::String& id, bool monitor)
+            {
+                if (kind == "destination")
+                    for (auto& d : destinations)
+                        if (d.id == id) d.monitor = monitor;
+                refreshAll();
+                applyProfile();
+            };
+            mixerPanel.onMixMinus = [this] (const juce::String& kind, const juce::String& id,
+                                            juce::Component* anchor)
+            {
+                if (kind == "destination")
+                    showMixMinusMenu (id, anchor);
+            };
             mixerPanel.onClose = [this] { setMixerVisible (false); };
             mixerResizer.onDragDelta = [this] (int delta)
             {
@@ -6872,6 +7277,172 @@ namespace
 
         void openMixer() { setMixerVisible (true); }
         void toggleMixer() { setMixerVisible (! mixerVisible); }
+
+        // ------------------------------------------------------------- Studio
+        // Bidirectional studio surface: return paths, buses, monitoring and
+        // mix-minus are all edits of the same project, so they go through the
+        // normal model + applyProfile() path (never a second audio path).
+        static juce::String studioReturnDestinationId() { return "studio-out-12"; }
+        static juce::String studioReturnSourceId (int endpointIndex)
+        {
+            return "studio-ret-" + juce::String (endpointIndex + 1);
+        }
+
+        StudioState studioState() const
+        {
+            StudioState state;
+            for (int i = 0; i < 4; ++i)
+            {
+                StudioReturnInfo info;
+                info.endpointIndex = i;
+                info.label = "NL Return " + juce::String (i + 1);
+                const auto sourceId = studioReturnSourceId (i);
+                for (const auto& r : routes)
+                    if (r.sourceId == sourceId && r.destinationId == studioReturnDestinationId()
+                        && r.enabled)
+                        info.active = true;
+                state.returns.push_back (info);
+            }
+            for (const auto& b : buses)
+            {
+                StudioBusInfo info;
+                info.id = b.id;
+                info.name = b.name;
+                info.enabled = b.enabled;
+                // A bus reaches a destination through its explicit bus-source.
+                const auto busSourceId = "bus-src-" + b.id;
+                info.routeCount = (int) std::count_if (routes.begin(), routes.end(),
+                                                       [&] (const Route& r)
+                                                       {
+                                                           return r.sourceId == b.id
+                                                                  || r.sourceId == busSourceId;
+                                                       });
+                state.buses.push_back (info);
+            }
+            for (const auto& d : destinations)
+            {
+                StudioMonitorInfo info;
+                info.id = d.id;
+                info.name = d.name;
+                info.monitor = d.monitor;
+                info.mixMinusCount = (int) d.mixMinus.size();
+                state.destinations.push_back (info);
+            }
+            state.asioOutputs.add ("ASIO out 1/2");
+            return state;
+        }
+
+        void toggleStudioReturn (int endpointIndex)
+        {
+            const auto sourceId = studioReturnSourceId (endpointIndex);
+            const auto destinationId = studioReturnDestinationId();
+            const bool active = std::any_of (routes.begin(), routes.end(), [&] (const Route& r)
+            {
+                return r.sourceId == sourceId && r.destinationId == destinationId;
+            });
+            if (active)
+            {
+                routes.erase (std::remove_if (routes.begin(), routes.end(), [&] (const Route& r)
+                {
+                    return r.sourceId == sourceId && r.destinationId == destinationId;
+                }), routes.end());
+                setStatus (L10n::tr ("Ritorno rimosso: ", "Return removed: ")
+                           + "NL Return " + juce::String (endpointIndex + 1));
+            }
+            else
+            {
+                if (std::none_of (sources.begin(), sources.end(),
+                                  [&] (const Source& s) { return s.id == sourceId; }))
+                {
+                    Source s;
+                    s.id = sourceId;
+                    s.name = "NL Return " + juce::String (endpointIndex + 1);
+                    s.type = "loopback";
+                    s.endpoint = s.name;
+                    s.channels = { 0, 1 };
+                    s.x = 120.0f;
+                    s.y = 40.0f + 82.0f * (float) endpointIndex;
+                    sources.push_back (s);
+                }
+                else
+                {
+                    for (auto& s : sources)
+                        if (s.id == sourceId) s.enabled = true;
+                }
+                if (std::none_of (destinations.begin(), destinations.end(),
+                                  [&] (const Destination& d) { return d.id == destinationId; }))
+                {
+                    Destination d;
+                    d.id = destinationId;
+                    d.name = "ASIO out 1/2";
+                    d.type = "asio-out";
+                    d.channels = { 0, 1 };
+                    d.x = 640.0f;
+                    d.y = 40.0f;
+                    destinations.push_back (d);
+                }
+                else
+                {
+                    for (auto& d : destinations)
+                        if (d.id == destinationId) d.enabled = true;
+                }
+                Route r;
+                r.sourceId = sourceId;
+                r.destinationId = destinationId;
+                routes.push_back (r);
+                setStatus (L10n::tr ("Ritorno creato: ", "Return created: ")
+                           + "NL Return " + juce::String (endpointIndex + 1) + " -> ASIO out 1/2");
+            }
+            refreshAll();
+            applyProfile();
+        }
+
+        void setStudioMonitor (const juce::String& destinationId, bool monitor)
+        {
+            for (auto& d : destinations)
+                if (d.id == destinationId) d.monitor = monitor;
+            refreshAll();
+            applyProfile();
+        }
+
+        void openStudio()
+        {
+            if (studioWindow != nullptr)
+            {
+                studioWindow->toFront (true);
+                return;
+            }
+            auto* content = new StudioComponent();
+            content->getState = [this] { return studioState(); };
+            content->onToggleReturn = [this] (int endpointIndex) { toggleStudioReturn (endpointIndex); };
+            content->onAddBus = [this] { addNodeFromCanvas ("bus"); };
+            content->onRouteBus = [this] (const juce::String& busId, const juce::String& destinationId)
+            {
+                connectFromPatchbay (busId, destinationId);
+            };
+            content->onMonitor = [this] (const juce::String& destinationId, bool monitor)
+            {
+                setStudioMonitor (destinationId, monitor);
+            };
+            content->onMixMinus = [this] (const juce::String& destinationId, juce::Component* anchor)
+            {
+                showMixMinusMenu (destinationId, anchor);
+            };
+            content->onClose = [this]
+            {
+                studioWindow = nullptr;
+                studioContent = nullptr;
+            };
+            studioContent = content;
+            studioWindow = new StudioWindow (content);
+            studioWindow->onClose = [this]
+            {
+                studioWindow = nullptr;
+                studioContent = nullptr;
+            };
+            setStatus (L10n::tr ("Studio: ritorni, bus, monitoraggio e mix-minus",
+                                 "Studio: returns, buses, monitoring and mix-minus"));
+        }
         void runLayoutTest()
         {
             const auto file = juce::File::getSpecialLocation (juce::File::tempDirectory)
@@ -7193,6 +7764,7 @@ namespace
                 case 2006: showQuickConnectDialog(); break;
                 case 2007: quickConnect(); break;
                 case 2008: restoreStudioSession(); break;
+                case 2009: openStudio(); break;
                 case 2005: applyProfile(); break;
                 case 3001: refreshDevices(); refreshAll(); break;
                 case 3002: showVirtualDevices(); break;
@@ -9981,7 +10553,10 @@ namespace
         // Modular surface: patchbay central, on-demand sections and a compact
         // engine status bar (see EngineStatusBar).
         EngineStatusBar statusBar;
-        juce::TextButton sectionRouting, sectionMixer, sectionDevices, sectionDiagnostics, sectionQuickConnect;
+        juce::TextButton sectionRouting, sectionStudio, sectionMixer, sectionDevices, sectionDiagnostics, sectionQuickConnect;
+        // Studio surface window (returns / buses / monitoring / mix-minus).
+        StudioWindow* studioWindow = nullptr;
+        StudioComponent* studioContent = nullptr;
         bool devicesPanelVisible = false;
         bool engineAutostart = true;
         bool exitOnClose = false;
@@ -10136,6 +10711,7 @@ namespace
                     auto* menuContent = getMainComponent();
                     menu.addItem (2008, L10n::tr ("Ripristina sessione Studio"), true,
                                   menuContent != nullptr && menuContent->canRestoreStudioSession());
+                menu.addItem (2009, L10n::tr ("Studio (ritorni, bus, monitor, mix-minus)"));
                 }
                 menu.addSeparator();
                 menu.addItem (2004, L10n::tr ("Avvia / ferma motore"));
@@ -10397,6 +10973,46 @@ namespace
             juce::JUCEApplication::getInstance()->systemRequestedQuit();
         }
 
+        // Deterministic Studio-window verification: opens the real Studio
+        // surface, drives a return path through the production action, checks the
+        // model state and closes the window.  Reported like the other GUI tests.
+        void runStudioTest()
+        {
+            const auto file = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                  .getChildFile ("nlmatrix_studiotest.log");
+            file.deleteFile();
+            auto log = [file] (const juce::String& line) { file.appendText (line + "\n"); };
+            log ("NL Audio Matrix Studio UI test");
+            auto* main = getMainComponent();
+            if (main == nullptr)
+            {
+                log ("FAIL no MainComponent");
+                juce::JUCEApplication::getInstance()->systemRequestedQuit();
+                return;
+            }
+            main->openStudioForTest();
+            juce::Thread::sleep (250);
+            log (juce::String (main->isStudioWindowOpenForTest() ? "PASS " : "FAIL ")
+                 + "Studio window opens");
+            const int before = main->studioActiveReturnCountForTest();
+            main->toggleStudioReturnForTest (1); // NL Return 2
+            juce::Thread::sleep (120);
+            const int afterCreate = main->studioActiveReturnCountForTest();
+            log (juce::String (afterCreate == before + 1 ? "PASS " : "FAIL ")
+                 + "Studio creates a return path from the UI action");
+            main->toggleStudioReturnForTest (1);
+            juce::Thread::sleep (120);
+            const int afterRemove = main->studioActiveReturnCountForTest();
+            log (juce::String (afterRemove == before ? "PASS " : "FAIL ")
+                 + "Studio removes the return path again");
+            main->closeStudioWindowForTest();
+            juce::Thread::sleep (150);
+            log (juce::String (! main->isStudioWindowOpenForTest() ? "PASS " : "FAIL ")
+                 + "Studio window closes cleanly");
+            log ("SUMMARY studio complete");
+            juce::JUCEApplication::getInstance()->systemRequestedQuit();
+        }
+
         // Deterministic lifecycle verification used by the local test
         // coordinator: autostart, tray minimise keeping the engine alive,
         // restore and the real-exit path releasing ASIO/WASAPI resources.
@@ -10493,11 +11109,19 @@ namespace
             if (main != nullptr)
             {
                 performTrayAction (3);
-                juce::Thread::sleep (700);
+                // Engine start can take a moment (a leftover engine is asked to
+                // stop first), so wait for the real state instead of a fixed sleep.
+                int waited = 0;
+                while (! main->isEngineRunning() && waited < 6000)
+                {
+                    juce::Thread::sleep (50);
+                    waited += 50;
+                }
                 const bool running = main->isEngineRunning();
                 performTrayAction (2);
                 report.add ((! isVisible() ? "PASS " : "FAIL ") + juce::String ("tray Hide action"));
-                report.add ((running ? "PASS " : "FAIL ") + juce::String ("engine survives window hide"));
+                report.add ((running ? "PASS " : "FAIL ") + juce::String ("engine survives window hide")
+                            + (running ? juce::String() : " [" + main->engineLastErrorForTest() + "]"));
                 performTrayAction (1);
                 closeButtonPressed();
                 report.add ((! isVisible() ? "PASS " : "FAIL ")
@@ -10672,6 +11296,7 @@ namespace
                                   || args.contains ("--layouttest") || args.contains ("--diagtest")
                                   || args.contains ("--devicetest") || args.contains ("--abouttest")
                                   || args.contains ("--preftest") || args.contains ("--traytest")
+                                  || args.contains ("--studiotest")
                                   || args.contains ("--quickconnecttest")
                                   || args.contains ("--guiverify");
             if (auto* content = window->getMainComponent(); testMode)
@@ -10775,6 +11400,9 @@ namespace
             if (args.contains ("--mixertest"))
                 if (auto* content = window->getMainComponent())
                     content->openMixer();
+
+            if (args.contains ("--studiotest"))
+                window->runStudioTest();
 
             if (args.contains ("--selftest"))
             {
