@@ -51,7 +51,7 @@ function Assert-True {
 }
 
 $portableZip = Get-ChildItem $ReleaseDir -Filter '*-portable.zip' | Select-Object -First 1
-$setupExe = Get-ChildItem $ReleaseDir -Filter '*-VM-Setup.exe' | Select-Object -First 1
+$setupExe = Get-ChildItem $ReleaseDir -Filter '*-Setup-test-signed.exe' | Select-Object -First 1
 Assert-True ($null -ne $portableZip) 'portable zip missing'
 Assert-True ($null -ne $setupExe) 'installer exe missing'
 Log ("portable: " + $portableZip.Name + " " + $portableZip.Length + " bytes")

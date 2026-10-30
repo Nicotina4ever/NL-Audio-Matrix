@@ -63,14 +63,19 @@ $versionText = @(
 ) -join [Environment]::NewLine
 Set-Content (Join-Path $stagingRoot 'VERSION.txt') -Value ($versionText + [Environment]::NewLine) -Encoding ASCII
 
-# Build the uninstaller into the installer app payload. The setup helpers are
-# shared with the installer (NLSetupCommon.cs) and must be compiled into both.
+# Build the uninstaller and the read-only verifier into the installer app payload.
+# The setup helpers are shared with the installer (NLSetupCommon.cs).
 $uninstallerExe = Join-Path $app 'NLMatrixUninstall.exe'
 $manifest = Join-Path $root 'installer\installer.manifest'
+$verifyManifest = Join-Path $root 'installer\verify.manifest'
 $icon = Join-Path $root 'assets\nlmatrix_icon.ico'
 $setupCommon = Join-Path $root 'installer\NLSetupCommon.cs'
+$diagnosticsSource = Join-Path $root 'installer\NLSetupDiagnostics.cs'
+$verifySource = Join-Path $root 'installer\NLMatrixVerify.cs'
+$uiSource = Join-Path $root 'installer\NLSetupUI.cs'
 $refs = @(
     '/r:System.dll', '/r:System.Core.dll', '/r:System.Windows.Forms.dll',
+    '/r:System.Drawing.dll', '/r:System.Security.dll',
     '/r:System.IO.Compression.dll', '/r:System.IO.Compression.FileSystem.dll'
 )
 & $csc @('/nologo','/target:winexe','/platform:x64','/optimize+',
@@ -78,8 +83,20 @@ $refs = @(
     ('/win32manifest:' + $manifest),
     ('/win32icon:' + $icon),
     $setupCommon,
+    $diagnosticsSource,
     (Join-Path $root 'installer\NLMatrixUninstaller.cs')) @refs
 if ($LASTEXITCODE -ne 0) { throw 'Uninstaller build failed' }
+
+# The verifier must run without a UAC prompt at the next logon (asInvoker).
+$verifyExe = Join-Path $app 'NLMatrixVerify.exe'
+& $csc @('/nologo','/target:winexe','/platform:x64','/optimize+',
+    ('/out:' + $verifyExe),
+    ('/win32manifest:' + $verifyManifest),
+    ('/win32icon:' + $icon),
+    $setupCommon,
+    $diagnosticsSource,
+    $verifySource) @refs
+if ($LASTEXITCODE -ne 0) { throw 'Verifier build failed' }
 
 function Write-HashList([string]$baseDir, [string]$outFile) {
     $lines = New-Object System.Collections.Generic.List[string]
@@ -101,19 +118,30 @@ Copy-Item $licenses (Join-Path $payload 'licenses') -Recurse -Force
 foreach ($name in @('BUILD_INFO.json','VERSION.txt','SHA256SUMS.txt')) {
     Copy-Item (Join-Path $stagingRoot $name) (Join-Path $payload $name) -Force
 }
+# Never ship signing material: the public test certificate only, no private key.
+$forbidden = Get-ChildItem $payload -Recurse -File | Where-Object {
+    $_.Extension -in @('.pfx','.pvk','.snk','.key')
+}
+if ($forbidden.Count -gt 0) {
+    throw ('signing material must not be in the payload: ' + (($forbidden | ForEach-Object { $_.Name }) -join ', '))
+}
 $payloadZip = Join-Path $stagingRoot 'payload.zip'
 Compress-Archive -Path $payload -DestinationPath $payloadZip -CompressionLevel Optimal
 
 $releaseDir = Join-Path $OutputRoot $version
 Remove-Item $releaseDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
-$installerExe = Join-Path $releaseDir ("NL-Audio-Matrix-$version-VM-Setup.exe")
+$installerExe = Join-Path $releaseDir ("NL-Audio-Matrix-$version-Setup-test-signed.exe")
 $installerArgs = @('/nologo','/target:winexe','/platform:x64','/optimize+',
+    '/main:Installer',
     ('/out:' + $installerExe),
     ('/resource:' + $payloadZip + ',payload.zip'),
     ('/win32manifest:' + $manifest),
     ('/win32icon:' + $icon),
     $setupCommon,
+    $diagnosticsSource,
+    $uiSource,
+    $verifySource,
     (Join-Path $root 'installer\NLMatrixInstaller.cs')) + $refs
 & $csc $installerArgs
 if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
@@ -196,31 +224,56 @@ Built UTC: $builtUtc
 
 ## Packages
 
-1. NL-Audio-Matrix-$version-portable.zip — user-mode only.
-   No kernel driver, certificate, devcon or installer inside. Runs on standard
-   Windows 10/11 x64 with the devices already present: an ASIO driver, VB-CABLE,
-   or the NL Mic/Return endpoints if the full package is installed. Includes
-   PRESET_Apollo_to_VB-CABLE.json (Universal Audio USB ASIO MIC 1 -> CABLE Input)
-   and README.txt with the steps.
+1. NL-Audio-Matrix-$version-portable.zip — user-mode only, standard Windows.
+   No kernel driver, certificate, devcon or installer inside. Runs on Windows
+   10/11 x64 with the devices already present (an ASIO driver, VB-CABLE, or the
+   NL Mic/Return endpoints if the full package is installed). Includes
+   PRESET_Apollo_to_VB-CABLE.json and README.txt with the steps.
 
-2. NL-Audio-Matrix-$version-VM-Setup.exe — full NL installer:
-   application + engine + NL virtual driver + repair/upgrade/uninstall.
-   The driver is test-signed: it needs Windows test signing. Intended for the
-   test VM or a dedicated test PC. Setup is read-only until you run it and it
-   never enables test signing unless you pass /accept-testsigning explicitly;
-   it never changes Secure Boot or other third-party drivers.
+2. NL-Audio-Matrix-$version-Setup-test-signed.exe — the complete NL installer:
+   application + engine + NL virtual driver (NL Mic 1-4 / NL Return 1-4) with a
+   Windows setup wizard for install, upgrade, repair and uninstall.
+   The NL kernel driver is **test-signed**: it loads only while Windows test
+   signing is on and Secure Boot/HVCI do not block it. There is no
+   production-signed variant in this release.
+   - One file: it installs the application, the driver, the test certificate and
+     the eight endpoints; no manual SYS/INF/certificate installation is needed.
+   - Read-only diagnostics: driver absent/present/outdated/current/damaged,
+     INF DriverVer, loaded .sys version, PnP instance and problem code,
+     DriverStore packages, the eight endpoints, Secure Boot, TESTSIGNING, HVCI,
+     Code Integrity events, and the action setup would choose.
+   - Upgrade keeps presets/config and removes only obsolete NL driver packages;
+     repair restores missing files/driver/service/endpoints; uninstall removes
+     app, driver, certificate and entries while keeping user profiles.
+   - Setup never enables test signing unless you tick the explicit option (or
+     pass /accept-testsigning), and never changes Secure Boot or HVCI. On
+     OEM/self-built PCs with Secure Boot on, the wizard explains the manual
+     firmware step and its consequences instead of doing it.
+   - After a required reboot, an asInvoker helper verifies driver, device, the
+     eight endpoints and application start/stop at the next logon.
 
-## Driver state and diagnostics
+## Security configuration (read this before installing the driver)
 
-Run NL-Audio-Matrix-$version-VM-Setup.exe --mode diagnose to get, without
-changing anything: driver absent/present/outdated/current/damaged decision,
-INF DriverVer, packaged signature vs embedded certificate, certificate trust,
-staged packages, endpoints count, test-signing and Secure Boot state.
+The driver is test-signed, so the target PC must allow it:
+  * Windows test signing on (bcdedit /set testsigning on) — the wizard can do it
+    only with your explicit consent;
+  * Secure Boot off on systems where it is enabled (manual firmware change);
+  * Memory integrity (HVCI) off if it is enabled.
+These reduce boot/kernel protection on that PC. Without them use the portable
+package only. The installer never changes those settings on its own.
+
+## Diagnostics from the command line
+
+  NL-Audio-Matrix-$version-Setup-test-signed.exe --mode diagnose
+  NL-Audio-Matrix-$version-Setup-test-signed.exe --mode verify /app-selftest
+
+Both are read-only for the system; verify writes a JSON report under
+%ProgramData%\NL Audio Matrix\reports (or %LOCALAPPDATA% when not writable).
 
 ## Status
 
-Pre-release. A21 (return-path loopback frequency accuracy) and A22 (capture
-path stability with concurrent clients) are open defects, so this build is not
+Pre-release. A21 (return-path loopback frequency accuracy) and A22 (capture path
+stability with concurrent clients) are open defects, so this build is not
 Stable and must not be promoted to Stable until they are closed.
 
 ## Apollo manual test (authorized by the owner, not automated)
@@ -233,9 +286,66 @@ UAD Console and Windows defaults are not modified by NL Audio Matrix.
 ## Integrity
 
 SHA256SUMS.txt lists every asset in this folder; BUILD_INFO.json carries the
-Build ID, commit and component hashes.
+Build ID, commit and component hashes. No signing private key is included.
 "@
 Set-Content -Path (Join-Path $releaseDir 'RELEASE_NOTES.md') -Value $notes -Encoding UTF8
+
+$guide = @"
+NL AUDIO MATRIX $version — GUIDA ALL'INSTALLAZIONE
+==================================================
+
+COSA INSTALLA IL SETUP COMPLETO
+  • Applicazione NLMatrixUI.exe, motore NLMatrixRouter.exe
+  • Driver virtuali NL Mic 1-4 e NL Return 1-4 (otto endpoint)
+  • Certificato pubblico di test e servizio driver
+  Un solo file: non serve installare a mano SYS, INF o certificati.
+  Nessuna chiave privata di firma è inclusa nel pacchetto.
+
+IL DRIVER È FIRMATO PER TEST
+  Windows carica il driver NL solo con la firma di test attiva (TESTSIGNING).
+  Non esiste in questa release una variante con firma di produzione.
+
+REQUISITI DI WINDOWS
+  • Windows 10/11 x64 (build 19041 o successiva)
+  • Firma di test attiva: il setup può attivarla solo con il tuo consenso esplicito
+  • Secure Boot disattivato se presente (modifica manuale nel firmware)
+  • Integrità memoria (HVCI) disattivata se attiva
+  Queste modifiche riducono le protezioni di avvio di quel PC: usale solo su un
+  PC di test o accettandone le conseguenze. Su un Windows standard senza modalità
+  test usa la portable.
+
+PC OEM/PREASSEMBLATI O ASSEMBLATI CON SECURE BOOT ATTIVO
+  1. Riavvia nel firmware (BIOS/UEFI) e disattiva Secure Boot. È una modifica
+     manuale: il setup non la esegue e non la propone automaticamente.
+  2. Avvia Setup: nella pagina Opzioni vedrai lo stato reale; se serve abilita
+     la firma di test con l'opzione esplicita e riavvia.
+  3. Se «Integrità memoria» è attiva: Sicurezza di Windows → Sicurezza del
+     dispositivo → Isolamento core → disattivala, poi riavvia.
+  4. Riavvia Setup: la diagnostica deve risultare favorevole e l'installazione
+     può procedere.
+
+PROCEDURA CONSIGLIATA
+  1. Avvia NL-Audio-Matrix-$version-Setup-test-signed.exe.
+  2. Premi «Diagnostica (sola lettura)» e controlla driver, endpoint e sicurezza.
+  3. Scegli Installa / Aggiorna / Ripara / Disinstalla e premi Avanti.
+  4. Al termine, se richiesto, riavvia: al successivo accesso la verifica
+     automatica controlla driver, otto endpoint e avvio/arresto dell'app.
+
+COSA VIENE CONSERVATO
+  • Profili, preset e preferenze in %APPDATA%\NL Audio Matrix (anche dopo
+    aggiornamento, riparazione e disinstallazione).
+  • Driver di terzi (UAD, Focusrite, VB-CABLE) e impostazioni audio di Windows.
+  • Gli aggiornamenti rimuovono solo i pacchetti driver NL obsoleti.
+
+RIMOZIONE
+  Impostazioni → App → NL Audio Matrix → Disinstalla, oppure Setup → Disinstalla.
+  Rimuove app, driver, certificato ed endpoint; conserva i profili utente.
+
+LOG E REPORT
+  %TEMP%\NLMatrixSetup-<modalità>.log
+  %ProgramData%\NL Audio Matrix\reports\last-diagnose.txt / last-verify.json
+"@
+Set-Content -Path (Join-Path $releaseDir 'GUIDA-INSTALLAZIONE.txt') -Value $guide -Encoding UTF8
 
 Write-Host ("Release directory: " + $releaseDir)
 Get-ChildItem $releaseDir -File | Select-Object Name,Length | Format-Table -AutoSize

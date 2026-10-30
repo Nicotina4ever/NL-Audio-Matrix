@@ -1,11 +1,15 @@
 // NLMatrixInstaller.cs — NL Audio Matrix setup, repair, upgrade and uninstall.
 //
-// CLI
-//   NLMatrixSetup.exe [--mode install|repair|upgrade|uninstall]
-//                     [/silent] [/launch] [/dir=<path>]
+// Starting the executable with no arguments opens the setup wizard (install,
+// upgrade, repair, uninstall, read-only diagnostics).  The command line below is
+// still supported for automation and for Add/Remove Programs.
 //
-//   No arguments            -> interactive install (backwards compatible).
-//   /silent                 -> silent install (backwards compatible).
+// CLI
+//   NLMatrixSetup.exe [--mode install|repair|upgrade|uninstall|diagnose|verify]
+//                     [/silent] [/launch] [/dir=<path>] [/accept-testsigning]
+//                     [/app-selftest] [/register-post-reboot-verify]
+//
+//   /silent                 -> no UI (for deployment automation)
 //   /launch                 -> start NLMatrixUI.exe after a successful install.
 //   /dir=<path>             -> installation folder (default C:\NLMatrix).
 //   --mode install          -> install, or bring an existing installation to this
@@ -14,9 +18,14 @@
 //                              driver package, service, endpoints and shortcuts;
 //                              requires an existing installation.
 //   --mode upgrade          -> replace an older NL Audio Matrix installation with
-//                              this package, keeping %APPDATA% presets/config.
+//                              this package, keeping %APPDATA% presets/config and
+//                              removing only obsolete NL driver packages.
 //   --mode uninstall        -> remove devices, driver packages, app files and
 //                              entries (exit 0 even when nothing is installed).
+//   --mode diagnose         -> read-only report: driver, PnP identity, DriverStore,
+//                              endpoints, Secure Boot/TESTSIGNING/HVCI, Code Integrity.
+//   --mode verify           -> read-only health verification (exit 9 when not healthy);
+//                              /app-selftest starts and stops the application.
 //   Unknown options or modes print the usage text and exit with code 2.
 //
 // Exit code table (also printed by --help and written to the log)
@@ -55,21 +64,28 @@ using System.Windows.Forms;
 [assembly: AssemblyFileVersion("0.6.0.0")]
 [assembly: AssemblyInformationalVersion("0.6.0-setup")]
 
+internal sealed class SetupOptions
+{
+    public string Mode = "install";
+    public bool ModeSpecified;
+    public bool Silent;
+    public bool Launch;
+    public bool AcceptTestSigning;
+    public bool Help;
+    public bool DirSpecified;
+    public bool AppSelfTest;
+    public bool ExpectAbsent;
+    public bool RegisterPostRebootVerify;
+    public bool Gui;
+    public string AppDir = NlConst.DefaultAppDir;
+}
+
 internal static class Installer
 {
     private const string AppName = NlConst.AppName;
     private static string tempDirectory = "";
 
-    private sealed class Options
-    {
-        public string Mode = "install";
-        public bool Silent;
-        public bool Launch;
-        public bool AcceptTestSigning;
-        public bool Help;
-        public bool DirSpecified;
-        public string AppDir = NlConst.DefaultAppDir;
-    }
+    internal static string TemporaryDirectory { get { return tempDirectory; } }
 
     private sealed class InstallationState
     {
@@ -99,20 +115,25 @@ internal static class Installer
         }
     }
 
-    private static string UsageText()
+    internal static string UsageText()
     {
         return
             "NL Audio Matrix Setup — usage\r\n" +
             "\r\n" +
-            "  NLMatrixSetup.exe [--mode install|repair|upgrade|uninstall|diagnose]\r\n" +
+            "  Start NLMatrixSetup.exe without arguments to open the setup wizard\r\n" +
+            "  (install, upgrade, repair, uninstall and read-only diagnostics).\r\n" +
+            "\r\n" +
+            "  NLMatrixSetup.exe [--mode install|repair|upgrade|uninstall|diagnose|verify]\r\n" +
             "                    [/silent] [/launch] [/dir=<path>] [/accept-testsigning]\r\n" +
+            "                    [/app-selftest] [/register-post-reboot-verify]\r\n" +
             "\r\n" +
             "Modes:\r\n" +
             "  --mode install    Install, or update an existing installation to this package (default)\r\n" +
             "  --mode repair     Restore missing/inconsistent files, driver, service and shortcuts\r\n" +
             "  --mode upgrade    Replace an older installation, keeping presets/config\r\n" +
             "  --mode uninstall  Remove NL Audio Matrix and its virtual audio driver\r\n" +
-            "  --mode diagnose   Read-only report: driver state, signature, security, endpoints\r\n" +
+            "  --mode diagnose   Read-only report: driver, PnP identity, security, endpoints\r\n" +
+            "  --mode verify     Read-only health check; /app-selftest also starts/stops the app\r\n" +
             "\r\n" +
             "Options:\r\n" +
             "  /silent           No UI (for deployment automation)\r\n" +
@@ -120,6 +141,7 @@ internal static class Installer
             "  /dir=<path>       Installation folder (default C:\\NLMatrix)\r\n" +
             "  /accept-testsigning  Allow setup to enable Windows test signing when the\r\n" +
             "                       test-signed NL driver needs it (never done silently)\r\n" +
+            "  /register-post-reboot-verify  Ask the next logon to verify the installation\r\n" +
             "  /? --help         Show this help\r\n" +
             "\r\n" +
             "Exit codes:\r\n" +
@@ -127,14 +149,13 @@ internal static class Installer
             "   3 payload missing    4 payload integrity failed 5 app files/entries failed\r\n" +
             "   6 certificate failed 7 pnputil staging failed   8 devcon device operation failed\r\n" +
             "   9 service/endpoints  10 unexpected error        11 mode precondition not met\r\n" +
-            "  12 test signing failed\r\n" +
-            "  20 success, reboot required\r\n";
+            "  12 security config blocks test signing           20 success, reboot required\r\n";
     }
 
     [STAThread]
     private static int Main(string[] args)
     {
-        Options options;
+        SetupOptions options;
         try
         {
             options = ParseOptions(args);
@@ -163,30 +184,27 @@ internal static class Installer
             return 0;
         }
 
+        // Double-clicking the setup (or passing only cosmetic switches) opens the
+        // wizard.  An explicit --mode keeps the scriptable command-line behaviour.
+        if (options.Gui) return NlSetupUi.Run(options, args);
+        return RunCommandLine(options, args);
+    }
+
+    internal static int RunCommandLine(SetupOptions options, string[] args)
+    {
         var logPath = Path.Combine(Path.GetTempPath(), "NLMatrixSetup-" + options.Mode + ".log");
         var log = new SetupLog(logPath);
         int exitCode = 10;
         string summary = "";
+        bool rebootRequired = false;
         try
         {
             log.Header("NL Audio Matrix Setup", options.Mode, args,
                        "Install folder: " + options.AppDir + " (from command line: " + options.DirSpecified + ")");
             Console.WriteLine("NL Audio Matrix Setup: mode=" + options.Mode + " log=" + log.Path);
 
-            if (!Sys.IsAdmin())
-                throw new SetupException(1,
-                    "NL Audio Matrix Setup requires administrator privileges.\r\n" +
-                    "Right-click NLMatrixSetup.exe and choose 'Run as administrator'.");
-            if (!Environment.Is64BitOperatingSystem || !Environment.Is64BitProcess)
-                throw new SetupException(2,
-                    "NL Audio Matrix requires 64-bit Windows and the 64-bit setup executable.");
-
-            if (options.Mode == "diagnose")
-                exitCode = RunDiagnoseMode(options, log, out summary);
-            else if (options.Mode == "uninstall")
-                exitCode = RunUninstallMode(options, log, out summary);
-            else
-                exitCode = RunSetup(options, log, out summary);
+            ValidateEnvironment();
+            exitCode = Execute(options, log, out summary, out rebootRequired);
         }
         catch (SetupException ex)
         {
@@ -204,20 +222,62 @@ internal static class Installer
         }
         finally
         {
+            RecordPendingReboot(options, log, exitCode, rebootRequired);
             log.Result(exitCode, summary);
-            if (!string.IsNullOrEmpty(tempDirectory))
-            {
-                try { Directory.Delete(tempDirectory, true); } catch { }
-                tempDirectory = "";
-            }
+            CleanupPayload();
             log.Dispose();
         }
         return exitCode;
     }
 
-    private static Options ParseOptions(string[] args)
+    // Shared by the command line and the wizard: validates the host, then runs the
+    // requested mode.  rebootRequired is true when a reboot is needed to finish.
+    internal static void ValidateEnvironment()
     {
-        var options = new Options();
+        if (!Sys.IsAdmin())
+            throw new SetupException(1,
+                "NL Audio Matrix Setup requires administrator privileges.\r\n" +
+                "Right-click NLMatrixSetup.exe and choose 'Run as administrator'.");
+        if (!Environment.Is64BitOperatingSystem || !Environment.Is64BitProcess)
+            throw new SetupException(2,
+                "NL Audio Matrix requires 64-bit Windows and the 64-bit setup executable.");
+    }
+
+    internal static int Execute(SetupOptions options, SetupLog log, out string summary, out bool rebootRequired)
+    {
+        summary = "";
+        rebootRequired = false;
+        if (options.Mode == "diagnose") return RunDiagnoseMode(options, log, out summary);
+        if (options.Mode == "verify") return RunVerifyMode(options, log, out summary);
+        if (options.Mode == "uninstall") return RunUninstallMode(options, log, out summary);
+        return RunSetup(options, log, out summary, out rebootRequired);
+    }
+
+    internal static void RecordPendingReboot(SetupOptions options, SetupLog log, int exitCode, bool rebootRequired)
+    {
+        if (!rebootRequired) return;
+        if (exitCode != 20) return;
+        string phase = options.Mode == "uninstall" ? "uninstall"
+                     : options.Mode == "repair" ? "repair"
+                     : options.Mode == "upgrade" ? "upgrade" : "install";
+        string version = NlDiagnostics.ReadVersionValue(options.AppDir, "version");
+        NlPendingReboot.Write(log, phase, options.AppDir, version);
+        if (options.RegisterPostRebootVerify && options.Mode != "uninstall")
+            NlPendingReboot.RegisterRunOnce(log, options.AppDir);
+    }
+
+    internal static void CleanupPayload()
+    {
+        if (!string.IsNullOrEmpty(tempDirectory))
+        {
+            try { Directory.Delete(tempDirectory, true); } catch { }
+            tempDirectory = "";
+        }
+    }
+
+    private static SetupOptions ParseOptions(string[] args)
+    {
+        var options = new SetupOptions();
         bool modeSpecified = false;
         for (int i = 0; i < args.Length; i++)
         {
@@ -234,6 +294,18 @@ internal static class Installer
             else if (lower == "/accept-testsigning" || lower == "--accept-testsigning")
             {
                 options.AcceptTestSigning = true;
+            }
+            else if (lower == "/app-selftest" || lower == "--app-selftest")
+            {
+                options.AppSelfTest = true;
+            }
+            else if (lower == "/register-post-reboot-verify" || lower == "--register-post-reboot-verify")
+            {
+                options.RegisterPostRebootVerify = true;
+            }
+            else if (lower == "/expect-absent" || lower == "--expect-absent")
+            {
+                options.ExpectAbsent = true;
             }
             else if (lower == "/?" || lower == "/help" || lower == "--help" || lower == "-h")
             {
@@ -271,6 +343,8 @@ internal static class Installer
                 throw new SetupException(2, "Unknown command-line option: " + arg);
             }
         }
+        options.ModeSpecified = modeSpecified;
+        options.Gui = !options.ModeSpecified && !options.Silent && !options.Help;
         return options;
     }
 
@@ -278,10 +352,10 @@ internal static class Installer
     {
         string mode = (value ?? "").Trim().ToLowerInvariant();
         if (mode == "install" || mode == "repair" || mode == "upgrade" || mode == "uninstall"
-            || mode == "diagnose")
+            || mode == "diagnose" || mode == "verify")
             return mode;
         throw new SetupException(2,
-            "Unknown mode '" + value + "'. Valid modes are: install, repair, upgrade, uninstall, diagnose.");
+            "Unknown mode '" + value + "'. Valid modes are: install, repair, upgrade, uninstall, diagnose, verify.");
     }
 
     private static void PrintUsage(string error)
@@ -305,7 +379,7 @@ internal static class Installer
     }
 
     // ---------------------------------------------------------------- uninstall
-    private static int RunUninstallMode(Options options, SetupLog log, out string summary)
+    private static int RunUninstallMode(SetupOptions options, SetupLog log, out string summary)
     {
         if (!options.Silent)
         {
@@ -357,121 +431,131 @@ internal static class Installer
 
     // ------------------------------------------------------------- diagnose
     // Read-only report used before installing: what is present, whether the
-    // test-signed driver can load on this Windows build, and which setup action
-    // (install / upgrade / repair / keep) the state would select.  It never
-    // changes drivers, certificates, bcdedit or Secure Boot.
-    private static int RunDiagnoseMode(Options options, SetupLog log, out string summary)
+    // test-signed driver can load on this Windows host (Secure Boot/TESTSIGNING/
+    // HVCI), the exact PnP identity, Code Integrity evidence, and which setup
+    // action the state selects.  It never changes drivers, certificates, bcdedit
+    // or Secure Boot.
+    private static int RunDiagnoseMode(SetupOptions options, SetupLog log, out string summary)
     {
         summary = "";
         string payloadRoot = ExtractPayload(log);
         try
         {
-            var manifest = ValidatePayload(payloadRoot, log);
+            ValidatePayload(payloadRoot, log);
             string payloadVersion = ReadVersionValue(payloadRoot, "version");
             string payloadBuildId = ReadVersionValue(payloadRoot, "buildId");
             string payloadDriverVersion = NlDrivers.ParseDriverVer(
                 Path.Combine(payloadRoot, "driver", NlConst.InfName));
-            var state = GatherState(options, payloadRoot, manifest, log);
-            var endpoints = NlEndpoints.Collect(log);
+            var report = BuildDiagnostics(options, log, payloadRoot, payloadVersion, payloadBuildId,
+                                          payloadDriverVersion);
+            report.Decision = DescribeDecision(report, payloadDriverVersion);
             var sb = new StringBuilder();
-            sb.AppendLine("NL Audio Matrix setup diagnostics — read-only, nothing was installed or changed");
-            sb.AppendLine("  Package             : " + payloadVersion + " (build " + payloadBuildId + ")");
-            sb.AppendLine("  Package driver      : " + NlText.DisplayVersion(payloadDriverVersion));
-            sb.AppendLine("  Driver signature    : " + DescribePackageSignature(payloadRoot));
-            sb.AppendLine("  App installed       : " + (state.AppPresent
-                ? "yes" + (state.PreviousAppVersion.Length > 0 ? " (" + state.PreviousAppVersion + ")" : "")
-                : "no"));
-            sb.AppendLine("  NL device present   : " + state.DevicePresent);
-            sb.AppendLine("  Driver service      : " + (state.ServiceRunning ? "running" : "not running"));
-            sb.AppendLine("  Bound driver        : " + NlText.DisplayVersion(state.PreviousDriverVersion));
-            sb.AppendLine("  Staged packages     : " + NlDrivers.DescribeInstalled(state.DriverPackages));
-            sb.AppendLine("  Certificate trusted : " + state.CertificateTrusted);
-            sb.AppendLine("  Endpoints           : " + endpoints.TotalCount + " total, "
-                          + endpoints.ActiveCount + " active");
-            if (endpoints.MissingExpected.Count > 0)
-                sb.AppendLine("  Missing endpoints   : " + string.Join(", ", endpoints.MissingExpected.ToArray()));
-            sb.AppendLine("  Test signing        : " + (NlDevices.IsTestSigningEnabled(log) ? "enabled" : "not enabled"));
-            sb.AppendLine("  Secure Boot         : " + DescribeSecureBoot());
-            sb.AppendLine("  Setup decision      : " + DescribeDriverDecision(state, payloadDriverVersion));
-            sb.AppendLine("  Log                 : " + log.Path);
+            report.ToText(sb);
             summary = sb.ToString();
             Console.WriteLine(summary);
             log.Info("Diagnostics: " + summary.Replace("\r\n", " | "));
+            NlDiagnostics.WriteReport(log, report);
             return 0;
         }
         finally
         {
-            if (!string.IsNullOrEmpty(tempDirectory))
-            {
-                try { Directory.Delete(tempDirectory, true); } catch { }
-                tempDirectory = "";
-            }
+            CleanupPayload();
         }
     }
 
-    private static string DescribePackageSignature(string payloadRoot)
+    internal static SetupDiagnosticsReport BuildDiagnostics(SetupOptions options, SetupLog log, string payloadRoot,
+                                                            string packageVersion, string buildId,
+                                                            string driverVersion)
     {
+        string signature = DescribePackageSignature(payloadRoot);
+        var device = NlPnp.Inspect(NlConst.RootHwid);
+        var report = NlDiagnostics.Collect(log, "diagnose", options.AppDir, packageVersion, buildId,
+                                            driverVersion, signature, device);
+        report.LegacyDevicePresent = NlPnp.Inspect(NlConst.LegacyHwid).Present;
+        return report;
+    }
+
+    // Read-only state scan used by the wizard before the user chooses an action.
+    internal static SetupDiagnosticsReport ScanOnce(SetupOptions options, SetupLog log)
+    {
+        string payloadRoot = ExtractPayload(log);
         try
         {
-            string sys = Path.Combine(payloadRoot, "driver", "NLMatrixAudio.sys");
-            string cer = Path.Combine(payloadRoot, "driver", NlConst.CerName);
-            var signer = X509Certificate.CreateFromSignedFile(sys);
-            var expected = new X509Certificate2(cer);
-            bool match = string.Equals(signer.GetCertHashString(), expected.Thumbprint,
-                                       StringComparison.OrdinalIgnoreCase);
-            return "test-signed by " + signer.Subject
-                   + (match ? " (matches embedded certificate)" : " (does NOT match embedded certificate)");
+            ValidatePayload(payloadRoot, log);
+            string payloadVersion = ReadVersionValue(payloadRoot, "version");
+            string payloadBuildId = ReadVersionValue(payloadRoot, "buildId");
+            string payloadDriverVersion = NlDrivers.ParseDriverVer(
+                Path.Combine(payloadRoot, "driver", NlConst.InfName));
+            var report = BuildDiagnostics(options, log, payloadRoot, payloadVersion, payloadBuildId,
+                                          payloadDriverVersion);
+            report.Decision = DescribeDecision(report, payloadDriverVersion);
+            return report;
         }
-        catch (Exception ex)
+        finally
         {
-            return "unknown (" + ex.Message + ")";
+            CleanupPayload();
         }
     }
 
-    private static string DescribeSecureBoot()
+    // --------------------------------------------------------------- verify
+    private static int RunVerifyMode(SetupOptions options, SetupLog log, out string summary)
     {
-        try
-        {
-            using (var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
-                       @"SYSTEM\CurrentControlSet\Control\SecureBoot\State"))
-            {
-                var value = key?.GetValue("UEFISecureBootEnabled");
-                if (value == null) return "unknown (not exposed by this firmware/OS)";
-                return Convert.ToInt32(value) == 1 ? "enabled" : "disabled";
-            }
-        }
-        catch
-        {
-            return "unknown";
-        }
+        var outcome = NlVerify.Run(log, options.AppDir, "verify", 0, options.ExpectAbsent,
+                                   options.AppSelfTest);
+        summary = outcome.Text;
+        Console.WriteLine(summary);
+        log.Info("Verify: " + outcome.OneLine);
+        return outcome.ExitCode;
     }
 
-    private static string DescribeDriverDecision(InstallationState state, string payloadDriverVersion)
+    internal static string DescribePackageSignature(string payloadRoot)
     {
-        bool versionOk = NlText.SameVersion(state.PreviousDriverVersion, payloadDriverVersion)
-                         || (state.PreviousDriverVersion.Length == 0
-                             && NlDrivers.HasVersion(state.DriverPackages, payloadDriverVersion));
-        bool healthy = state.DevicePresent && state.ServiceRunning;
-        if (!state.DevicePresent && state.LegacyPresent)
-            return "legacy device only -> install (legacy device replaced)";
-        if (!state.DevicePresent)
-            return state.DriverPackages.Count > 0
-                ? "driver package staged but device absent/damaged -> install/repair"
-                : "driver absent -> install";
+        return NlSignature.Describe(Path.Combine(payloadRoot, "driver"));
+    }
+
+    private static string DescribeDecision(SetupDiagnosticsReport report, string payloadDriverVersion)
+    {
+        string securitySuffix = report.Security != null && report.Security.Verdict == "blocked"
+            ? " [driver blocked by the Windows security configuration: follow the guidance]"
+            : "";
+        if (!report.Device.Present && report.LegacyDevicePresent)
+            return "legacy NLMatrix device only -> install (legacy device replaced)" + securitySuffix;
+        if (!report.Device.Present)
+        {
+            if (report.Packages.Count > 0)
+                return "driver package staged but device absent/damaged -> install/repair" + securitySuffix;
+            return "driver absent -> install" + securitySuffix;
+        }
+
+        bool versionOk = NlText.SameVersion(report.BoundDriverVersion, payloadDriverVersion)
+                         || (report.BoundDriverVersion.Length == 0
+                             && NlDrivers.HasVersion(report.Packages, payloadDriverVersion));
         if (!versionOk)
-            return state.PreviousDriverVersion.Length > 0
-                ? "driver outdated (" + NlText.DisplayVersion(state.PreviousDriverVersion) + " vs "
-                  + NlText.DisplayVersion(payloadDriverVersion) + ") -> upgrade"
-                : "driver version unreadable -> repair/reinstall";
-        if (!healthy)
+        {
+            return "driver outdated (" + NlText.DisplayVersion(report.BoundDriverVersion) + " vs "
+                 + NlText.DisplayVersion(payloadDriverVersion) + ") -> upgrade" + securitySuffix;
+        }
+        if (report.Packages.Count > 1)
+            return "obsolete NL driver packages in the DriverStore (" + report.Packages.Count +
+                   ") -> upgrade removes the outdated ones, keeps the current one" + securitySuffix;
+        if (report.Device.InstanceCount > 1)
+            return "duplicate NLMatrix device instances (" + report.Device.InstanceCount + ") -> repair removes the extras";
+        if (report.Runtime == null || !report.Runtime.ServiceRunning)
             return "driver present but service not running -> repair";
-        return "driver current and running -> keep (repair only if app files/endpoints are missing)";
+        if (report.AppFileProblems > 0)
+            return "application files missing or modified (" + report.AppFileProblems + ") -> repair";
+        if (report.Endpoints == null || report.Endpoints.MissingExpected.Count > 0)
+            return "user mode endpoints incomplete -> repair";
+        if (report.Security != null && report.Security.Verdict == "blocked")
+            return "installation healthy but the driver is blocked (" + report.Security.BlockReason + ")" + securitySuffix;
+        return "installation current and healthy -> keep";
     }
 
     // ------------------------------------------------------------ install flow
-    private static int RunSetup(Options options, SetupLog log, out string summary)
+    private static int RunSetup(SetupOptions options, SetupLog log, out string summary, out bool rebootRequired)
     {
         summary = "";
+        rebootRequired = false;
         string payloadRoot = ExtractPayload(log);
         try
         {
@@ -500,7 +584,6 @@ internal static class Installer
 
             bool fresh = !state.AnyInstallation;
             var repairs = new List<string>();
-            bool rebootRequired = false;
 
             log.Step("Stopping NL Audio Matrix processes");
             NlAppFiles.StopKnownProcesses(log, options.AppDir);
@@ -509,9 +592,18 @@ internal static class Installer
             NlAppFiles.CopySelf(log, options.AppDir);
 
             EnsureDriver(options, payloadRoot, payloadDriverVersion, state, log, repairs, ref rebootRequired);
+
+            RemoveDuplicateInstances(options, payloadRoot, payloadDriverVersion, state, log, repairs, ref rebootRequired);
+
+            if (!rebootRequired && state.DriverPackages.Count > 0)
+            {
+                int obsolete = NlDrivers.RemoveObsolete(log, payloadDriverVersion);
+                if (obsolete > 0) repairs.Add(obsolete + " obsolete NL driver package(s) removed");
+            }
+
             EnsureEntries(options, payloadVersion, state, log, repairs);
 
-            log.Step("Verifying NL audio endpoints");
+            log.Step("Verifying the eight NL audio endpoints");
             var endpoints = NlEndpoints.WaitFor(log, rebootRequired ? 5000 : 25000);
             if (endpoints.ActiveCount == 0)
             {
@@ -522,12 +614,20 @@ internal static class Installer
                         "The NLMatrix device is installed and the driver service is running, but no NL Mic/NL Return " +
                         "audio endpoints were enumerated. See the log for the devcon/pnputil output.");
             }
+            else if (!rebootRequired && (endpoints.ActiveCapture < 4 || endpoints.ActiveRender < 4))
+            {
+                throw new SetupException(9,
+                    "Only " + endpoints.ActiveCapture + " NL capture and " + endpoints.ActiveRender +
+                    " NL render endpoints are active; 4 + 4 are required. See the log for the endpoint list.");
+            }
             else if (endpoints.MissingExpected.Count > 0)
             {
                 log.Warn("Only " + (NlConst.ExpectedEndpointNames.Length - endpoints.MissingExpected.Count) +
-                         " of " + NlConst.ExpectedEndpointNames.Length + " expected NL endpoints are present. Missing: " +
+                         " of " + NlConst.ExpectedEndpointNames.Length + " expected NL endpoint names are present " +
+                         "(endpoints may have been renamed). Missing: " +
                          string.Join(", ", endpoints.MissingExpected.ToArray()));
             }
+            log.Info("Endpoint result: " + endpoints.Summary);
 
             if (options.Launch && !rebootRequired)
             {
@@ -548,15 +648,37 @@ internal static class Installer
         }
         finally
         {
-            if (!string.IsNullOrEmpty(tempDirectory))
-            {
-                try { Directory.Delete(tempDirectory, true); } catch { }
-                tempDirectory = "";
-            }
+            CleanupPayload();
         }
     }
 
-    private static InstallationState GatherState(Options options, string payloadRoot,
+    // A repeated install must never leave more than one root device instance.
+    // Only the NLMatrix hardware ID is touched; nothing else is removed.
+    private static void RemoveDuplicateInstances(SetupOptions options, string payloadRoot, string payloadDriverVersion,
+                                                 InstallationState state, SetupLog log, List<string> repairs,
+                                                 ref bool rebootRequired)
+    {
+        if (!state.DevicePresent) return;
+        int instances = NlPnp.Inspect(NlConst.RootHwid).InstanceCount;
+        if (instances <= 1) return;
+
+        log.Warn("Found " + instances + " NLMatrix device instances; removing them and reinstalling one clean instance.");
+        bool duplicateReboot;
+        NlDevices.RemoveDevice(log, state.Devcon, NlConst.RootHwid, out duplicateReboot);
+        rebootRequired |= duplicateReboot;
+        state.DevicePresent = NlDevices.Exists(log, state.Devcon, NlConst.RootHwid);
+        if (!state.DevicePresent && !rebootRequired)
+        {
+            EnsureDriver(options, payloadRoot, payloadDriverVersion, state, log, repairs, ref rebootRequired);
+            repairs.Add("duplicate device instances removed");
+        }
+        else
+        {
+            repairs.Add("duplicate device instances queued for removal (reboot required)");
+        }
+    }
+
+    private static InstallationState GatherState(SetupOptions options, string payloadRoot,
                                                  List<HashEntry> manifest, SetupLog log)
     {
         var state = new InstallationState { AppDir = options.AppDir };
@@ -604,7 +726,7 @@ internal static class Installer
         return state;
     }
 
-    private static bool EnsureApplicationFiles(Options options, string payloadRoot, InstallationState state,
+    private static bool EnsureApplicationFiles(SetupOptions options, string payloadRoot, InstallationState state,
                                                List<HashEntry> manifest, SetupLog log, List<string> repairs,
                                                bool fresh)
     {
@@ -642,7 +764,7 @@ internal static class Installer
         return "application files repaired (" + problems + " missing/modified)";
     }
 
-    private static void EnsureDriver(Options options, string payloadRoot, string payloadDriverVersion,
+    private static void EnsureDriver(SetupOptions options, string payloadRoot, string payloadDriverVersion,
                                      InstallationState state, SetupLog log, List<string> repairs,
                                      ref bool rebootRequired)
     {
@@ -865,7 +987,7 @@ internal static class Installer
         return false;
     }
 
-    private static void EnsureEntries(Options options, string payloadVersion, InstallationState state,
+    private static void EnsureEntries(SetupOptions options, string payloadVersion, InstallationState state,
                                       SetupLog log, List<string> repairs)
     {
         log.Step("Writing Start Menu and Add/Remove Programs entries");
@@ -882,7 +1004,7 @@ internal static class Installer
         if (!state.StartMenu) repairs.Add("Start Menu shortcuts created");
     }
 
-    private static string BuildSetupSummary(Options options, InstallationState state,
+    private static string BuildSetupSummary(SetupOptions options, InstallationState state,
                                             string appVersion, string buildId, string driverVersion,
                                             bool fresh, bool appDeployed, List<string> repairs,
                                             bool rebootRequired, EndpointReport endpoints, string logPath,

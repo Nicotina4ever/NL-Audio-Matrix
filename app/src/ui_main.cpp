@@ -7648,6 +7648,7 @@ namespace
                 updateEngineStatusBar();
         }
         bool isExitOnCloseEnabled() const { return exitOnClose; }
+        void setExitOnCloseForThisRun (bool enabled) { exitOnClose = enabled; }
         void setExitOnClose (bool enabled)
         {
             exitOnClose = enabled;
@@ -11498,6 +11499,14 @@ namespace
                                               : value == "system" ? ThemeMode::system : ThemeMode::dark);
                 }
             }
+
+            // --exit-on-close: for this run only, the window X performs a real exit
+            // (engine stop) instead of minimising to the tray.  Used by the setup
+            // verification to prove a normal start/stop without touching the
+            // operator's saved preference.
+            if (args.contains ("--exit-on-close"))
+                if (auto* mainContent = window->getMainComponent())
+                    mainContent->setExitOnCloseForThisRun (true);
 
             if (args.contains ("--abouttest"))
                 new AboutWindow();

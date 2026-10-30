@@ -43,7 +43,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('smoke','guiselftest','guilifecycle','guistudio','guimixer','guiquickconnect','quickconnect','endpoints','endpoints8','mixminus','distcheck','matrix')]
+    [ValidateSet('smoke','guiselftest','guilifecycle','guistudio','guimixer','guiquickconnect','quickconnect','endpoints','endpoints8','mixminus','distcheck','setupcheck','matrix')]
     [string]$Suite = 'smoke',
     [string]$OutRoot = '',
     [string]$BuildDir = '',
@@ -163,6 +163,13 @@ function Get-SuiteSteps([string]$suite) {
         'endpoints' {
             return @(@{ name = 'Endpoint audio verification'; kind = 'script';
                        script = 'tools\vm\Run-EndpointAudioVerification.ps1'; args = @('-Phase','Both') })
+        }
+        'setupcheck' {
+            # Complete NL setup package in the VM: wizard GUI, diagnose/verify,
+            # install/repair/upgrade/reinstall, uninstall, reboot, post-reboot
+            # RunOnce verification and the eight endpoints.
+            return @(@{ name = 'Complete installer lifecycle'; kind = 'script';
+                       script = 'tools\vm\Run-SetupLifecycleCheck.ps1'; args = @() })
         }
         'matrix' {
             return @(@{ name = 'Engine matrix (engine2)'; kind = 'script';
@@ -454,7 +461,7 @@ if ($Unattended) {
         $summaryPath = Join-Path $runDir 'summary.json'
         $result = 'ERROR'; $steps = @(); $summaryText = ''
         try {
-            if (-not $Force -and $Suite -in @('quickconnect','guiquickconnect','endpoints','mixminus','distcheck','matrix')) {
+            if (-not $Force -and $Suite -in @('quickconnect','guiquickconnect','endpoints','mixminus','distcheck','setupcheck','matrix')) {
                 $busy = Test-AudioSessionBusy
                 if ($busy) { throw "BUSY: $busy" }
             }

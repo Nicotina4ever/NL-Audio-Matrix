@@ -13,6 +13,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -220,6 +221,11 @@ internal sealed class SetupLog : IDisposable
 {
     private StreamWriter writer;
 
+    // Optional live mirror of the log lines, used by the setup wizard to show
+    // progress.  It is a plain static field so a closed wizard leaves nothing
+    // subscribed; the setter is cleared when the operation ends.
+    public static Action<string, string> LineWritten;
+
     public string Path { get; private set; }
     public bool Enabled { get { return writer != null; } }
 
@@ -283,6 +289,11 @@ internal sealed class SetupLog : IDisposable
                              level.PadRight(5) + " " + (text == null ? "" : text));
         }
         catch { }
+        var mirror = LineWritten;
+        if (mirror != null)
+        {
+            try { mirror(level, text == null ? "" : text); } catch { }
+        }
     }
 
     public void Line(string level, string text)
@@ -847,6 +858,44 @@ internal static class NlDrivers
         }
     }
 
+    // Removes only NLMatrix driver packages whose DriverVer differs from the
+    // version that is now installed.  Older versions are kept when their version
+    // cannot be read, and no other vendor's package is ever touched.
+    public static int RemoveObsolete(SetupLog log, string keepVersion)
+    {
+        if (string.IsNullOrEmpty(keepVersion)) return 0;
+        int removed = 0;
+        foreach (var package in FindInstalled(log))
+        {
+            if (NlText.SameVersion(package.DriverVer, keepVersion))
+            {
+                log.Info("Keeping current NL driver package " + package.PublishedName +
+                         " [" + NlText.DisplayVersion(package.DriverVer) + "].");
+                continue;
+            }
+            if (NlText.NormalizeVersion(package.DriverVer).Length == 0)
+            {
+                log.Warn("Keeping driver package " + package.PublishedName + ": its DriverVer could not be read.");
+                continue;
+            }
+            var result = Sys.Run("pnputil.exe",
+                "/delete-driver " + Sys.Quote(package.PublishedName) + " /uninstall", 180000);
+            log.Command(result);
+            if (result.ExitCode == 0 || result.ExitCode == 3010 || result.ExitCode == 1641)
+            {
+                removed++;
+                log.Info("Removed obsolete driver package " + package.PublishedName +
+                         " [" + NlText.DisplayVersion(package.DriverVer) + "].");
+            }
+            else
+            {
+                log.Warn("Could not remove the obsolete driver package " + package.PublishedName +
+                         " (exit " + result.ExitCode + "); it stays in the DriverStore.");
+            }
+        }
+        return removed;
+    }
+
     public static bool DeleteInstalled(SetupLog log, out int removed, out bool rebootRequired)
     {
         removed = 0;
@@ -909,8 +958,16 @@ internal static class NlDevices
         return "";
     }
 
+    // Returns the device instance IDs that carry this hardware ID.  Root-enumerated
+    // devices do not necessarily live under Enum\<hwid> (the ROOT enumerator may
+    // use its own instance key, e.g. ROOT\MEDIA\0000), so the authoritative answer
+    // comes from SetupAPI: every present device whose SPDRP_HARDWAREID matches.
     public static List<string> RootInstanceIds(string hwid)
     {
+        var byHardware = PresentInstanceIds(hwid);
+        if (byHardware.Count > 0) return byHardware;
+
+        // Fallback for a device that is registered but not present right now.
         var instances = new List<string>();
         if (string.IsNullOrEmpty(hwid)) return instances;
         var parts = hwid.Split('\\');
@@ -928,6 +985,128 @@ internal static class NlDevices
         }
         catch { }
         return instances;
+    }
+
+    private const int DIGCF_PRESENT = 0x00000002;
+    private const int DIGCF_ALLCLASSES = 0x00000004;
+    private const int SPDRP_HARDWAREID = 0x00000001;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SP_DEVINFO_DATA
+    {
+        public int cbSize;
+        public Guid ClassGuid;
+        public int DevInst;
+        public IntPtr Reserved;
+    }
+
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr SetupDiGetClassDevsW(IntPtr classGuid, string enumerator, IntPtr hwndParent, int flags);
+
+    [DllImport("setupapi.dll", SetLastError = true)]
+    private static extern bool SetupDiEnumDeviceInfo(IntPtr deviceInfoSet, int memberIndex, ref SP_DEVINFO_DATA deviceInfoData);
+
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool SetupDiGetDeviceInstanceIdW(IntPtr deviceInfoSet, ref SP_DEVINFO_DATA deviceInfoData,
+                                                           StringBuilder deviceInstanceId, int deviceInstanceIdSize,
+                                                           out int requiredSize);
+
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool SetupDiGetDeviceRegistryPropertyW(IntPtr deviceInfoSet, ref SP_DEVINFO_DATA deviceInfoData,
+                                                                 int property, out int propertyRegDataType,
+                                                                 byte[] propertyBuffer, int propertyBufferSize,
+                                                                 out int requiredSize);
+
+    [DllImport("setupapi.dll", SetLastError = true)]
+    private static extern bool SetupDiDestroyDeviceInfoList(IntPtr deviceInfoSet);
+
+    public static List<string> PresentInstanceIds(string hwid)
+    {
+        var matches = new List<string>();
+        if (string.IsNullOrEmpty(hwid)) return matches;
+        IntPtr set = IntPtr.Zero;
+        try
+        {
+            set = SetupDiGetClassDevsW(IntPtr.Zero, null, IntPtr.Zero, DIGCF_PRESENT | DIGCF_ALLCLASSES);
+            if (set == IntPtr.Zero || set == new IntPtr(-1)) return matches;
+            var data = new SP_DEVINFO_DATA();
+            data.cbSize = Marshal.SizeOf(typeof(SP_DEVINFO_DATA));
+            for (int index = 0; SetupDiEnumDeviceInfo(set, index, ref data); index++)
+            {
+                var buffer = new StringBuilder(512);
+                int required;
+                if (!SetupDiGetDeviceInstanceIdW(set, ref data, buffer, buffer.Capacity, out required)) continue;
+                string instanceId = buffer.ToString();
+                if (!HardwareIdMatches(set, ref data, hwid)) continue;
+                matches.Add(instanceId);
+            }
+        }
+        catch { }
+        finally
+        {
+            if (set != IntPtr.Zero && set != new IntPtr(-1))
+            {
+                try { SetupDiDestroyDeviceInfoList(set); } catch { }
+            }
+        }
+        return matches;
+    }
+
+    private static bool HardwareIdMatches(IntPtr set, ref SP_DEVINFO_DATA data, string hwid)
+    {
+        try
+        {
+            int type, required;
+            var buffer = new byte[4096];
+            if (!SetupDiGetDeviceRegistryPropertyW(set, ref data, SPDRP_HARDWAREID, out type, buffer, buffer.Length, out required))
+                return false;
+            string multi = Encoding.Unicode.GetString(buffer, 0, Math.Min(required, buffer.Length));
+            foreach (var entry in multi.Split('\0'))
+            {
+                if (string.Equals(entry.Trim(), hwid, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    // The INF that installed a device instance (SPDRP_INF_PATH).  The Enum "Driver"
+    // value of a root device points at the class key instead, so this is the
+    // reliable way to name the driver package that is actually bound.
+    public static string InfPathForInstance(string instanceId)
+    {
+        if (string.IsNullOrEmpty(instanceId)) return "";
+        IntPtr set = IntPtr.Zero;
+        try
+        {
+            set = SetupDiGetClassDevsW(IntPtr.Zero, null, IntPtr.Zero, DIGCF_PRESENT | DIGCF_ALLCLASSES);
+            if (set == IntPtr.Zero || set == new IntPtr(-1)) return "";
+            var data = new SP_DEVINFO_DATA();
+            data.cbSize = Marshal.SizeOf(typeof(SP_DEVINFO_DATA));
+            for (int index = 0; SetupDiEnumDeviceInfo(set, index, ref data); index++)
+            {
+                var buffer = new StringBuilder(512);
+                int required;
+                if (!SetupDiGetDeviceInstanceIdW(set, ref data, buffer, buffer.Capacity, out required)) continue;
+                if (!string.Equals(buffer.ToString(), instanceId, StringComparison.OrdinalIgnoreCase)) continue;
+
+                int type, size;
+                var bytes = new byte[1024];
+                // SPDRP_INF_PATH
+                if (!SetupDiGetDeviceRegistryPropertyW(set, ref data, 0x0000000A, out type, bytes, bytes.Length, out size))
+                    return "";
+                return Encoding.Unicode.GetString(bytes, 0, Math.Min(size, bytes.Length)).TrimEnd('\0').Trim();
+            }
+        }
+        catch { }
+        finally
+        {
+            if (set != IntPtr.Zero && set != new IntPtr(-1))
+            {
+                try { SetupDiDestroyDeviceInfoList(set); } catch { }
+            }
+        }
+        return "";
     }
 
     public static bool Exists(SetupLog log, string devcon, string hwid)
@@ -1643,6 +1822,24 @@ internal static class NlUninstall
         log.Step("Stopping NL Audio Matrix processes");
         NlAppFiles.StopKnownProcesses(log, appDir);
 
+        // Keep a copy of the read-only verifier outside the application folder:
+        // after a reboot-required removal it confirms that nothing is left.
+        string uninstallVersion = NlDiagnostics.ReadVersionValue(appDir, "version");
+        string verifySource = System.IO.Path.Combine(appDir, "NLMatrixVerify.exe");
+        string verifyCopy = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            NlConst.AppName, "NLMatrixVerify.exe");
+        try
+        {
+            if (File.Exists(verifySource))
+            {
+                Directory.CreateDirectory(System.IO.Path.GetDirectoryName(verifyCopy));
+                File.Copy(verifySource, verifyCopy, true);
+                log.Info("Kept the verification helper for the post-reboot check: " + verifyCopy);
+            }
+        }
+        catch (Exception ex) { log.Warn("Could not keep the verification helper: " + ex.Message); }
+
         bool reboot = false;
 
         log.Step("Removing NL Matrix audio devices (only the NLMatrix hardware IDs)");
@@ -1699,6 +1896,15 @@ internal static class NlUninstall
         }
         result.RebootRecommended = reboot;
         exitCode = reboot ? 20 : 0;
+
+        // After a reboot-required removal, verify the removal automatically at
+        // the next logon.  The verifier runs without administrator rights, so
+        // Windows shows no UAC prompt for this check.
+        if (reboot && File.Exists(verifyCopy))
+        {
+            NlPendingReboot.Write(log, "uninstall", appDir, uninstallVersion);
+            NlPendingReboot.RegisterRunOnce(log, verifyCopy, "--post-reboot");
+        }
 
         log.Info("Uninstall summary: devices=" + result.RemovedDevices + " driverPackages=" + result.RemovedPackages +
                  " certificates=" + result.RemovedCertificates + " appDirRemoved=" + result.AppFilesRemoved +

@@ -87,8 +87,13 @@ $icon = Join-Path $root "assets\nlmatrix_icon.ico"
 $commonSource = Join-Path $PSScriptRoot "NLSetupCommon.cs"
 $uninstallerSource = Join-Path $PSScriptRoot "NLMatrixUninstaller.cs"
 $installerSource = Join-Path $PSScriptRoot "NLMatrixInstaller.cs"
+$diagnosticsSource = Join-Path $PSScriptRoot "NLSetupDiagnostics.cs"
+$verifySource = Join-Path $PSScriptRoot "NLMatrixVerify.cs"
+$uiSource = Join-Path $PSScriptRoot "NLSetupUI.cs"
+$verifyManifest = Join-Path $PSScriptRoot "verify.manifest"
 $refs = @(
     "/r:System.dll", "/r:System.Core.dll", "/r:System.Windows.Forms.dll",
+    "/r:System.Drawing.dll", "/r:System.Security.dll",
     "/r:System.IO.Compression.dll", "/r:System.IO.Compression.FileSystem.dll"
 )
 
@@ -105,6 +110,21 @@ $uninstallerArgs = @(
 ) + $refs
 & $csc $uninstallerArgs
 if ($LASTEXITCODE -ne 0) { throw "uninstaller build failed (csc exit $LASTEXITCODE)" }
+
+# Read-only verifier installed with the application: RunOnce uses it after a
+# reboot, so it must NOT require administrator (asInvoker manifest).
+$verifyExe = Join-Path $app "NLMatrixVerify.exe"
+$verifyArgs = @(
+    "/nologo", "/target:winexe", "/platform:x64", "/optimize+",
+    ("/out:" + $verifyExe),
+    ("/win32manifest:" + $verifyManifest),
+    ("/win32icon:" + $icon),
+    $commonSource,
+    $diagnosticsSource,
+    $verifySource
+) + $refs
+& $csc $verifyArgs
+if ($LASTEXITCODE -ne 0) { throw "verifier build failed (csc exit $LASTEXITCODE)" }
 
 function Write-HashList([string]$baseDir, [string]$outFile) {
     $lines = New-Object System.Collections.Generic.List[string]
@@ -125,6 +145,18 @@ Copy-Item $licenses (Join-Path $payload "licenses") -Recurse -Force
 foreach ($name in @("BUILD_INFO.json", "VERSION.txt", "SHA256SUMS.txt")) {
     Copy-Item (Join-Path $staging $name) (Join-Path $payload $name) -Force
 }
+
+# Never ship signing material: the package may carry the public test
+# certificate (.cer) only, never a private key or a signing container.
+$forbidden = Get-ChildItem $payload -Recurse -File | Where-Object {
+    $_.Extension -in @('.pfx', '.pvk', '.snk', '.key')
+}
+if ($forbidden.Count -gt 0) {
+    throw ("signing material must not be in the payload: " + (($forbidden | ForEach-Object { $_.Name }) -join ', '))
+}
+$payloadFiles = Get-ChildItem $payload -Recurse -File
+Write-Host ("Payload files: " + $payloadFiles.Count + " (no private key material)")
+
 $payloadZip = Join-Path $staging "payload.zip"
 Compress-Archive -Path $payload -DestinationPath $payloadZip -CompressionLevel Optimal
 Copy-Item $payloadZip (Join-Path $out "payload.zip") -Force
@@ -132,11 +164,15 @@ Copy-Item $payloadZip (Join-Path $out "payload.zip") -Force
 $installerExe = Join-Path $out $(if ($Dev) { "NLMatrixSetup-dev.exe" } else { "NLMatrixSetup.exe" })
 $installerArgs = @(
     "/nologo", "/target:winexe", "/platform:x64", "/optimize+",
+    "/main:Installer",
     ("/out:" + $installerExe),
     ("/resource:" + $payloadZip + ",payload.zip"),
     ("/win32manifest:" + $manifest),
     ("/win32icon:" + $icon),
     $commonSource,
+    $diagnosticsSource,
+    $uiSource,
+    $verifySource,
     $installerSource
 ) + $refs
 & $csc $installerArgs
