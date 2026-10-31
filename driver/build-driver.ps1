@@ -38,14 +38,23 @@ $cdf = Join-Path $package "NLMatrixAudio.cdf"
 [CatalogHeader]
 Name=sysvad.cat
 ResultDir=$package
-PublicVersion=0x00000001
-EncodingType=0x00010000
+CatalogVersion=2
+HashAlgorithms=SHA256
 
 [CatalogFiles]
 <HASH>NLMatrixAudio.sys=$package\NLMatrixAudio.sys
 <HASH>ComponentizedAudioSample.inf=$package\ComponentizedAudioSample.inf
 "@ | Set-Content -LiteralPath $cdf -Encoding ASCII
 Remove-Item (Join-Path $package "sysvad.cat") -Force -ErrorAction SilentlyContinue
+
+# Sign the driver image first (embedded SHA-256 signature), then build the
+# SHA-256 catalog over the signed image.  Windows 10 26H2 / Windows 11 reject
+# SHA-1 catalog hashes for kernel drivers with code 52/577 ("file hash could
+# not be found"), so the catalog must be CatalogVersion 2 with SHA-256 hashes.
+if (Test-Path $cert) {
+    & $signtool sign /f $cert /p "nlmatrix-dev" /fd SHA256 /a (Join-Path $package "NLMatrixAudio.sys") | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "driver image signing failed" }
+}
 & $makecat -v $cdf | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "makecat failed" }
 

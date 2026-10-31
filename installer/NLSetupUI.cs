@@ -627,7 +627,17 @@ internal sealed class SetupWizard : Form
             Margin = new Padding(0, 0, 0, 2)
         };
         Bind(radio, it, en);
-        radio.CheckedChanged += delegate { UpdateNextText(); };
+        // Each action group lives in its own TableLayoutPanel, so WinForms does
+        // not treat these radios as one group. Enforce the single selection here.
+        radio.CheckedChanged += delegate
+        {
+            if (!radio.Checked) return;
+            if (actionRadios != null)
+                foreach (var other in actionRadios)
+                    if (other != null && other != radio && other.Checked)
+                        other.Checked = false;
+            UpdateNextText();
+        };
 
         var description = new Label
         {
