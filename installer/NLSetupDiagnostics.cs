@@ -747,6 +747,66 @@ internal static class NlPendingReboot
     }
 }
 
+// One-shot scheduled task that finishes an installation whose driver could not be
+// installed before the restart (for example when test signing only becomes active
+// at the next boot).  It runs setup --mode repair as SYSTEM at the next sign-in,
+// so the user does not have to pick an action: restart and it completes itself.
+internal static class NlPostReboot
+{
+    public const string TaskName = "NLMatrixPostReboot";
+    private const string ScriptName = "post-reboot.cmd";
+
+    // True when this process registered the automatic repair (used by the wizard text).
+    public static bool Scheduled { get; private set; }
+
+    public static bool Register(SetupLog log, string appDir)
+    {
+        string setup = System.IO.Path.Combine(appDir, NlConst.SetupExeName);
+        if (!System.IO.File.Exists(setup))
+        {
+            log.Warn("Cannot schedule the automatic post-reboot repair: " + setup + " is missing.");
+            return false;
+        }
+        string script = System.IO.Path.Combine(appDir, ScriptName);
+        string logFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "NLMatrixPostReboot.log");
+        var text = new System.Text.StringBuilder();
+        text.AppendLine("@echo off");
+        text.AppendLine("schtasks /delete /tn \"" + TaskName + "\" /f >nul 2>&1");
+        text.AppendLine("\"" + setup + "\" --mode repair /silent >> \"" + logFile + "\" 2>&1");
+        try
+        {
+            System.IO.File.WriteAllText(script, text.ToString(), System.Text.Encoding.ASCII);
+        }
+        catch (Exception ex)
+        {
+            log.Warn("Cannot write the post-reboot script: " + ex.Message);
+            return false;
+        }
+
+        string arguments = "/Create /TN \"" + TaskName + "\" /TR \"\\\"" + script + "\\\"\" " +
+                           "/SC ONLOGON /RL HIGHEST /RU SYSTEM /F";
+        var result = Sys.Run("schtasks.exe", arguments, 60000);
+        log.Command(result);
+        if (!result.Started || result.ExitCode != 0)
+        {
+            log.Warn("Could not schedule the automatic post-reboot repair (schtasks exit " + result.ExitCode +
+                     "); run setup again after the restart to finish the driver.");
+            return false;
+        }
+        log.Info("Scheduled the automatic post-reboot repair (" + TaskName + "): at the next sign-in setup " +
+                 "installs the driver and verifies the eight endpoints.");
+        Scheduled = true;
+        return true;
+    }
+
+    public static void Remove(SetupLog log)
+    {
+        Scheduled = false;
+        var result = Sys.Run("schtasks.exe", "/Delete /TN \"" + TaskName + "\" /F", 60000);
+        if (result.Started && result.ExitCode == 0) log.Info("Removed the scheduled post-reboot repair.");
+    }
+}
+
 // ------------------------------------------------------------------ report
 internal sealed class SetupDiagnosticsReport
 {

@@ -1352,7 +1352,10 @@ internal sealed class SetupWizard : Form
         if (pending.Pending)
         {
             sb.AppendLine();
-            if (options.RegisterPostRebootVerify)
+            if (NlPostReboot.Scheduled)
+                sb.AppendLine(T("Riavvio in sospeso: al prossimo accesso Windows completerà da solo l'installazione del driver e verificherà gli 8 endpoint.",
+                                "Reboot pending: at the next sign-in Windows completes the driver installation and verifies the eight endpoints by itself."));
+            else if (options.RegisterPostRebootVerify)
                 sb.AppendLine(T("Riavvio in sospeso: al prossimo accesso una verifica automatica controllerà driver, endpoint e applicazione.",
                                 "Reboot pending: at the next sign-in an automatic check verifies driver, endpoints and application."));
             else

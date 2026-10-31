@@ -255,14 +255,19 @@ internal static class Installer
 
     internal static void RecordPendingReboot(SetupOptions options, SetupLog log, int exitCode, bool rebootRequired)
     {
-        if (!rebootRequired) return;
+        if (!rebootRequired)
+        {
+            if (exitCode == 0 && options.Mode != "uninstall") NlPostReboot.Remove(log);
+            return;
+        }
         if (exitCode != 20) return;
         string phase = options.Mode == "uninstall" ? "uninstall"
                      : options.Mode == "repair" ? "repair"
                      : options.Mode == "upgrade" ? "upgrade" : "install";
         string version = NlDiagnostics.ReadVersionValue(options.AppDir, "version");
         NlPendingReboot.Write(log, phase, options.AppDir, version);
-        if (options.RegisterPostRebootVerify && options.Mode != "uninstall")
+        bool scheduled = options.Mode != "uninstall" && NlPostReboot.Register(log, options.AppDir);
+        if (!scheduled && options.RegisterPostRebootVerify && options.Mode != "uninstall")
             NlPendingReboot.RegisterRunOnce(log, options.AppDir);
     }
 
@@ -397,6 +402,7 @@ internal static class Installer
         }
 
         int exitCode;
+        NlPostReboot.Remove(log);
         var result = NlUninstall.Run(log, options.DirSpecified ? options.AppDir : null, out exitCode);
         summary = BuildUninstallSummary(result);
         if (!options.Silent) ShowInfo(summary, result.RebootRecommended);
@@ -1090,8 +1096,8 @@ internal static class Installer
                               : ""));
 
         if (rebootRequired)
-            sb.AppendLine("\r\nA reboot is required to finish setup. After the restart run NLMatrixSetup again (Ripara) " +
-                          "to install the driver and verify the eight NL endpoints.");
+            sb.AppendLine("\r\nA reboot is required to finish setup. Setup schedules the remaining driver work " +
+                          "to run automatically at the next sign-in; if it did not, run NLMatrixSetup again (Ripara).");
 
         sb.AppendLine("Log: " + logPath);
         return sb.ToString();
