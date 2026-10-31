@@ -7,6 +7,17 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+
+# Windows PowerShell 5.1 reads a BOM-less script as ANSI, which turns the UTF-8
+# characters of the generated texts into mojibake. Repair that known UTF-8 ->
+# Windows-1252 double encoding before writing the files (no-op when parsed cleanly).
+function Repair-Text([string]$Text) {
+    if (-not ($Text.Contains([string][char]0x00E2) -or $Text.Contains([string][char]0x00C3))) { return $Text }
+    try { $cp = [Text.Encoding]::GetEncoding(1252) } catch { return $Text }
+    $fixed = [Text.Encoding]::UTF8.GetString($cp.GetBytes($Text))
+    if ($fixed.Contains([string][char]0xFFFD)) { return $Text }
+    return $fixed
+}
 if (-not $OutputRoot) { $OutputRoot = Join-Path $root 'dist' }
 $csc = 'D:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\Roslyn\csc.exe'
 if (-not (Test-Path $csc)) { throw "csc.exe not found: $csc" }
@@ -177,6 +188,7 @@ Using the NL Mic / NL Return endpoints requires the full installer package
 (application + engine + NL virtual driver) on a Windows build where the
 test-signed driver can load. See RELEASE_NOTES.md.
 "@
+$readme = Repair-Text $readme
 Set-Content -Path (Join-Path $portable 'README.txt') -Value $readme -Encoding UTF8
 
 # Ready-made user-mode project for the manual Apollo test (no NL driver needed).
@@ -232,6 +244,10 @@ Built UTC: $builtUtc
    production-signed variant in this release.
    - One file: it installs the application, the driver, the test certificate and
      the eight endpoints; no manual SYS/INF/certificate installation is needed.
+   - The wizard is available in Italian and English (language selector in the
+     footer) and opens at the Windows UI language. The compressed payload (app,
+     engine, driver, certificate) is embedded in the same executable and is
+     extracted to %TEMP% only while Setup runs.
    - Read-only diagnostics: driver absent/present/outdated/current/damaged,
      INF DriverVer, loaded .sys version, PnP instance and problem code,
      DriverStore packages, the eight endpoints, Secure Boot, TESTSIGNING, HVCI,
@@ -282,6 +298,7 @@ UAD Console and Windows defaults are not modified by NL Audio Matrix.
 SHA256SUMS.txt lists every asset in this folder; BUILD_INFO.json carries the
 Build ID, commit and component hashes. No signing private key is included.
 "@
+$notes = Repair-Text $notes
 Set-Content -Path (Join-Path $releaseDir 'RELEASE_NOTES.md') -Value $notes -Encoding UTF8
 
 $guide = @"
@@ -320,9 +337,10 @@ PC OEM/PREASSEMBLATI O ASSEMBLATI CON SECURE BOOT ATTIVO
 
 PROCEDURA CONSIGLIATA
   1. Avvia NL-Audio-Matrix-$version-Setup-test-signed.exe.
-  2. Premi «Diagnostica (sola lettura)» e controlla driver, endpoint e sicurezza.
-  3. Scegli Installa / Aggiorna / Ripara / Disinstalla e premi Avanti.
-  4. Al termine, se richiesto, riavvia: al successivo accesso la verifica
+  2. Scegli la lingua in basso (Italiano / English): il wizard è bilingue.
+  3. Premi «Diagnostica (sola lettura)» e controlla driver, endpoint e sicurezza.
+  4. Scegli Installa / Aggiorna / Ripara / Disinstalla e premi Avanti.
+  5. Al termine, se richiesto, riavvia: al successivo accesso la verifica
      automatica controlla driver, otto endpoint e avvio/arresto dell'app.
 
 COSA VIENE CONSERVATO
@@ -339,6 +357,7 @@ LOG E REPORT
   %TEMP%\NLMatrixSetup-<modalità>.log
   %ProgramData%\NL Audio Matrix\reports\last-diagnose.txt / last-verify.json
 "@
+$guide = Repair-Text $guide
 Set-Content -Path (Join-Path $releaseDir 'GUIDA-INSTALLAZIONE.txt') -Value $guide -Encoding UTF8
 
 # Asset-level manifest for the GitHub pre-release: written last so it covers

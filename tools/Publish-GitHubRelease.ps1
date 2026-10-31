@@ -157,11 +157,27 @@ Step ('body verified on GitHub: ' + $notes.Length + ' chars, plain Markdown')
 
 # --------------------------------------------------------------------- uploads
 $files = Get-ChildItem $ReleaseDir -File | Sort-Object Name
+$tmp = Join-Path $env:TEMP ('nlrelease-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 $present = @{}
 foreach ($asset in $release.assets) { $present[$asset.name] = $asset }
 foreach ($file in $files) {
-    if ($present.ContainsKey($file.Name)) { Step ('asset present: ' + $file.Name); continue }
-    Step ('uploading ' + $file.Name + ' (' + $file.Length + ' bytes)')
+    $want = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    $asset = if ($present.ContainsKey($file.Name)) { $present[$file.Name] } else { $null }
+    if ($null -ne $asset) {
+        $same = $false
+        if ([int64]$asset.size -eq $file.Length) {
+            $probe = Join-Path $tmp ('probe-' + $file.Name)
+            Invoke-WebRequest -Method Get -Uri $asset.url -Headers $downloadHeaders -OutFile $probe | Out-Null
+            $same = ((Get-FileHash $probe -Algorithm SHA256).Hash.ToLowerInvariant() -eq $want)
+            Remove-Item $probe -Force -ErrorAction SilentlyContinue
+        }
+        if ($same) { Step ('asset unchanged: ' + $file.Name); continue }
+        Step ('replacing changed asset ' + $file.Name + ' (old id ' + $asset.id + ')')
+        Invoke-RestMethod -Method Delete -Uri ($api + '/releases/assets/' + $asset.id) -Headers $headers | Out-Null
+    } else {
+        Step ('uploading ' + $file.Name + ' (' + $file.Length + ' bytes)')
+    }
     $uri = $uploadApi + '/releases/' + $release.id + '/assets?name=' + [uri]::EscapeDataString($file.Name)
     Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -InFile $file.FullName `
         -ContentType 'application/octet-stream' | Out-Null
@@ -180,8 +196,6 @@ foreach ($marker in $BodyMarkers) {
 
 $assets = @{}
 foreach ($asset in $release.assets) { $assets[$asset.name] = $asset }
-$tmp = Join-Path $env:TEMP ('nlrelease-' + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 foreach ($file in $files) {
     if (-not $assets.ContainsKey($file.Name)) { $problems.Add('missing asset: ' + $file.Name); continue }
     $asset = $assets[$file.Name]
