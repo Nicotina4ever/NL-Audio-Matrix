@@ -611,6 +611,30 @@ namespace
         return result;
     }
 
+    // C3: reject malformed channel text in the editor with a visible message
+    // instead of letting the router refuse the configuration at start.
+    juce::String channelSyntaxError (const juce::String& text, bool requireChannels)
+    {
+        juce::StringArray parts;
+        parts.addTokens (text, ",", "");
+        bool any = false;
+        for (const auto& raw : parts)
+        {
+            const auto token = raw.trim();
+            if (token.isEmpty())
+                continue;
+            any = true;
+            if (! token.containsOnly ("0123456789"))
+                return L10n::tr ("Canali non validi: usa numeri separati da virgola (es. 1,2)",
+                                 "Invalid channels: use numbers separated by commas (e.g. 1,2)");
+            if (token.getIntValue() < 1)
+                return L10n::tr ("I canali ASIO partono da 1", "ASIO channels start at 1");
+        }
+        if (! any && requireChannels)
+            return L10n::tr ("Inserisci almeno un canale (es. 1,2)", "Enter at least one channel (e.g. 1,2)");
+        return {};
+    }
+
     juce::String channelsToText (const std::vector<int>& channels)
     {
         juce::StringArray parts;
@@ -4577,6 +4601,16 @@ namespace
                    "ASIO channel UI displays 1-based channels");
             check (parseChannels ("1,2") == std::vector<int> { 0, 1 },
                    "ASIO channel UI maps 1-based channels to 0-based model");
+            check (channelSyntaxError ("1,2", true).isEmpty(),
+                   "channel validation accepts a 1-based list");
+            check (channelSyntaxError ("0", true).isNotEmpty(),
+                   "channel validation rejects channel 0");
+            check (channelSyntaxError ("x", true).isNotEmpty(),
+                   "channel validation rejects non-numeric text");
+            check (channelSyntaxError ("", true).isNotEmpty(),
+                   "channel validation requires channels");
+            check (channelSyntaxError ("", false).isEmpty(),
+                   "channel validation allows an empty optional field");
             asioBox.setText (savedAsio, juce::dontSendNotification);
             sourceType.setSelectedId (previousSourceType, juce::dontSendNotification);
             const auto previousDestType = destinationType.getSelectedId();
@@ -7963,11 +7997,14 @@ namespace
             L10n::bindLabelText (routeGainLabel, "Guadagno dB");
             L10n::bindPlaceholder (sourceName, "nome sorgente");
             L10n::bindPlaceholder (sourceChannels, "canali ASIO, es. 1,2");
+            // Clear the red C3 validation mark as soon as the operator fixes the text.
+            sourceChannels.onTextChange = [this] { clearChannelFieldError (sourceChannels); };
             L10n::bindPlaceholder (sourceProcess, "processo.exe o PID");
             L10n::bindPlaceholder (sourceGain, "guadagno sorgente dB");
             L10n::bindPlaceholder (sourcePan, "pan -1..1");
             L10n::bindPlaceholder (destinationName, "nome destinazione");
             L10n::bindPlaceholder (destinationChannels, "canali ASIO, es. 1,2");
+            destinationChannels.onTextChange = [this] { clearChannelFieldError (destinationChannels); };
             L10n::bindPlaceholder (destinationGain, "guadagno destinazione dB");
             L10n::bindPlaceholder (busName, "nome bus (es. NL Mic Marco)");
             L10n::bindPlaceholder (busGain, "guadagno bus dB");
@@ -8378,6 +8415,64 @@ namespace
             return names;
         }
 
+        // C3: the editor validates the text immediately; the router never has to
+        // refuse a channel list that could have been corrected in place.  The
+        // upper bound is checked only when the device really reports its channel
+        // names (a busy/offline ASIO driver must not block manual entry).
+        juce::String channelTextError (const juce::String& text, bool forSource, bool requireChannels)
+        {
+            const auto syntax = channelSyntaxError (text, requireChannels);
+            if (syntax.isNotEmpty())
+                return syntax;
+
+            const auto type = forSource ? sourceTypeKey (sourceType.getSelectedId())
+                                        : destinationTypeKey (destinationType.getSelectedId());
+            if (type != "asio-in" && type != "asio-out")
+                return {};
+
+            const auto names = discoverChannels (forSource);
+            if (names.isEmpty() || names[0].containsIgnoreCase ("offline")
+                || names[0].containsIgnoreCase ("Windows endpoint"))
+                return {};
+
+            int highest = 0;
+            juce::StringArray parts;
+            parts.addTokens (text, ",", "");
+            for (const auto& raw : parts)
+            {
+                const auto token = raw.trim();
+                if (token.isNotEmpty())
+                    highest = juce::jmax (highest, token.getIntValue());
+            }
+            if (highest > names.size())
+                return L10n::tr ("Canale oltre il massimo del dispositivo (",
+                                 "Channel above the device maximum (")
+                       + juce::String (names.size()) + ")";
+            return {};
+        }
+
+        void clearChannelFieldError (juce::TextEditor& editor)
+        {
+            editor.removeColour (juce::TextEditor::outlineColourId);
+            editor.removeColour (juce::TextEditor::focusedOutlineColourId);
+            editor.setTooltip ({});
+        }
+
+        bool validateChannelEditor (juce::TextEditor& editor, bool forSource, bool requireChannels)
+        {
+            const auto error = channelTextError (editor.getText(), forSource, requireChannels);
+            if (error.isEmpty())
+            {
+                clearChannelFieldError (editor);
+                return true;
+            }
+            editor.setColour (juce::TextEditor::outlineColourId, juce::Colours::red);
+            editor.setColour (juce::TextEditor::focusedOutlineColourId, juce::Colours::red);
+            editor.setTooltip (error);
+            setStatus (error);
+            return false;
+        }
+
         juce::String autoNodeName (bool forSource)
         {
             const auto type = forSource ? sourceTypeKey (sourceType.getSelectedId())
@@ -8607,6 +8702,10 @@ namespace
                 return;
             }
 
+            if (! validateChannelEditor (sourceChannels, true,
+                                         sourceTypeKey (sourceType.getSelectedId()) == "asio-in"))
+                return;
+
             Source s = sources[(size_t) row];
             s.type = sourceTypeKey (sourceType.getSelectedId());
             s.name = sourceName.getText().trim();
@@ -8695,6 +8794,10 @@ namespace
                 return;
             }
 
+            if (! validateChannelEditor (destinationChannels, false,
+                                         destinationTypeKey (destinationType.getSelectedId()) == "asio-out"))
+                return;
+
             Destination d = destinations[(size_t) row];
             d.type = destinationTypeKey (destinationType.getSelectedId());
             d.name = destinationName.getText().trim();
@@ -8754,6 +8857,10 @@ namespace
 
         void addSource()
         {
+            if (! validateChannelEditor (sourceChannels, true,
+                                         sourceTypeKey (sourceType.getSelectedId()) == "asio-in"))
+                return;
+
             Source s;
             s.id = uniqueId ("s", sources, destinations, buses);
             s.type = sourceTypeKey (sourceType.getSelectedId());
@@ -8823,6 +8930,10 @@ namespace
 
         void addDestination()
         {
+            if (! validateChannelEditor (destinationChannels, false,
+                                         destinationTypeKey (destinationType.getSelectedId()) == "asio-out"))
+                return;
+
             Destination d;
             d.id = uniqueId ("d", sources, destinations, buses);
             d.type = destinationTypeKey (destinationType.getSelectedId());
