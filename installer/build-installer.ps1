@@ -106,6 +106,7 @@ $uninstallerArgs = @(
     ("/win32manifest:" + $manifest),
     ("/win32icon:" + $icon),
     $commonSource,
+    $diagnosticsSource,
     $uninstallerSource
 ) + $refs
 & $csc $uninstallerArgs
