@@ -614,5 +614,11 @@ Prossimo lavoro: funzionalita' Quick Connect in GUI, routing bidirezionale, mixe
 - Nota Fast Startup: su Windows lo spegnimento/accensione non rilegge la configurazione di avvio;
   serve un riavvio completo perche' `testsigning` diventi attivo (verificato sull'host: nessun
   riavvio dal 29/10 07:55, nessun watermark Test Mode).
+- **Istruzioni per utenti non tecnici**: `installer/LEGGIMI-SICUREZZA.txt` (IT/EN) viene copiato in
+  `C:\NLMatrix` e incluso nel pacchetto release/portable; descrive cosa cambia, come tornare a uno
+  stato standard (`bcdedit /set testsigning off` + riavvio) e come riattivare Secure Boot/HVCI a
+  mano nel firmware. Gli stessi passi sono nella guida, nella guida del wizard e nel riepilogo
+  dell'uninstaller (console e wizard). Nessuno script tocca il firmware: non e' possibile via
+  software e non servono script (nessun rischio antivirus).
 
 

@@ -81,6 +81,7 @@ $versionText = @(
     "builtUtc=$builtUtc"
 ) -join [Environment]::NewLine
 Set-Content (Join-Path $staging "VERSION.txt") -Value ($versionText + [Environment]::NewLine) -Encoding ASCII
+Copy-Item (Join-Path $PSScriptRoot "LEGGIMI-SICUREZZA.txt") (Join-Path $staging "LEGGIMI-SICUREZZA.txt") -Force
 
 $manifest = Join-Path $PSScriptRoot $(if ($Dev) { "dev.manifest" } else { "installer.manifest" })
 $icon = Join-Path $root "assets\nlmatrix_icon.ico"
@@ -143,7 +144,7 @@ New-Item -ItemType Directory -Force -Path $payload | Out-Null
 Copy-Item $app (Join-Path $payload "app") -Recurse -Force
 Copy-Item $driver (Join-Path $payload "driver") -Recurse -Force
 Copy-Item $licenses (Join-Path $payload "licenses") -Recurse -Force
-foreach ($name in @("BUILD_INFO.json", "VERSION.txt", "SHA256SUMS.txt")) {
+foreach ($name in @("BUILD_INFO.json", "VERSION.txt", "SHA256SUMS.txt", "LEGGIMI-SICUREZZA.txt")) {
     Copy-Item (Join-Path $staging $name) (Join-Path $payload $name) -Force
 }
 

@@ -247,6 +247,16 @@ internal static class Uninstaller
         sb.AppendLine();
         sb.AppendLine("Windows audio defaults and other vendors' audio devices were not changed.");
         sb.AppendLine("User presets/config in %APPDATA%\\" + AppName + " were kept.");
+        sb.AppendLine();
+        sb.AppendLine("Going back to a standard Windows state (if you enabled test signing or");
+        sb.AppendLine("disabled Secure Boot for the NL driver):");
+        sb.AppendLine("  1. run in an administrator command prompt: bcdedit /set testsigning off");
+        sb.AppendLine("  2. restart Windows: the \"Test Mode\" watermark disappears");
+        sb.AppendLine("  3. re-enable Secure Boot in the firmware (BIOS/UEFI) if you turned it off;");
+        sb.AppendLine("     no program can do this step, it is a firmware setting");
+        sb.AppendLine("  4. re-enable Memory integrity (HVCI) in Windows Security if you turned it off");
+        sb.AppendLine("Details: LEGGIMI-SICUREZZA.txt (installed in the application folder and");
+        sb.AppendLine("shipped with the setup package).");
         foreach (var warning in result.Warnings) sb.AppendLine("  Warning: " + warning);
         if (result.RebootRecommended)
             sb.AppendLine("\r\nA reboot is required to finish removing the driver or its endpoints.");

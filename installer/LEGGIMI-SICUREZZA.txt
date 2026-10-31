@@ -1,0 +1,100 @@
+NL AUDIO MATRIX — SICUREZZA, FIRMA DI TEST E RITORNO ALLO STATO STANDARD
+=======================================================================
+
+PERCHÉ SERVE QUALCOSA IN PIÙ RISPETTO A UN PROGRAMMA NORMALE
+Il driver virtuale NL (NL Mic 1-4 e NL Return 1-4) è un driver kernel firmato
+con un certificato di TEST, non con una firma di produzione. Windows lo carica
+solo se valgono entrambe le condizioni:
+  • la "firma di test" è attiva (TESTSIGNING);
+  • Secure Boot è disattivato nel firmware del PC.
+
+COSA È STATO CAMBIATO SU QUESTO PC
+  • Programma, motore e guide in C:\NLMatrix (rimovibili da Impostazioni > App).
+  • Certificato pubblico di test NLMatrix in "Autorità di certificazione radice
+    attendibili" e in "Editori attendibili" del computer locale.
+  • Impostazione di avvio "testsigning" attiva: dopo un riavvio Windows mostra
+    "Modalità test" in basso a destra.
+  • Driver NL, dispositivo e servizio, solo quando l'installazione completa.
+NON vengono toccati: driver di altre marche (UAD, Focusrite, VB-CABLE), UAD
+Console, impostazioni audio di Windows e Secure Boot (disattivato solo da voi,
+a mano nel firmware: il setup non lo cambia mai).
+
+COME TORNARE A UNO STATO STANDARD
+ 1. Disinstalla NL Audio Matrix: Impostazioni > App > NL Audio Matrix >
+    Disinstalla (oppure Setup > Disinstalla). Rimuove app, driver, dispositivo,
+    certificato ed endpoint; i profili utente restano in %APPDATA%\NL Audio
+    Matrix.
+ 2. Apri un prompt dei comandi come amministratore ed esegui:
+        bcdedit /set testsigning off
+ 3. Riavvia il PC: il watermark "Modalità test" sparisce e Windows torna a
+    caricare solo driver con firma normale.
+ 4. Se avevate disattivato Secure Boot per provare il driver NL, riattivatelo
+    nel firmware: riavvia ed entra nel BIOS/UEFI (di solito con F2, F10, F12 o
+    Canc durante l'accensione), cerca "Secure Boot" nella sezione Boot o
+    Security, impostalo su Enabled, salva ed esci.
+    Nessun programma e nessuno script può fare questo passo: è una
+    impostazione del firmware e va fatta a mano.
+ 5. Se avevate disattivato "Integrità memoria" (HVCI), riattivatela da
+    Sicurezza di Windows > Sicurezza del dispositivo > Isolamento core.
+
+SE NON AVETE MAI CAMBIATO NULLA
+Su molti PC Secure Boot è già disattivato: serve solo la firma di test (il
+setup può attivarla, su consenso esplicito) e un riavvio. Per usare NL Audio
+Matrix senza driver NL (pacchetto portable, con endpoint di altre marche) non
+servono né firma di test né Secure Boot disattivato.
+
+NOTA ANTIVIRUS
+In questo pacchetto non c'è nessuno script che modifichi il firmware o le
+protezioni di avvio: la disattivazione di Secure Boot si fa a mano nel
+BIOS/UEFI. Il setup agisce solo su file, registro e sul flag "testsigning",
+e solo con consenso esplicito.
+
+---------------------------------------------------------------------------
+
+NL AUDIO MATRIX — SECURITY, TEST SIGNING AND GOING BACK TO STANDARD
+==================================================================
+
+WHY THIS NEEDS MORE THAN A NORMAL PROGRAM
+The NL virtual driver (NL Mic 1-4 and NL Return 1-4) is a kernel driver signed
+with a TEST certificate, not a production one. Windows loads it only when both
+conditions hold:
+  • test signing is active (TESTSIGNING);
+  • Secure Boot is disabled in the PC firmware.
+
+WHAT THE SETUP CHANGED ON THIS PC
+  • Program, engine and guides in C:\NLMatrix (removable from Settings > Apps).
+  • The public NLMatrix test certificate in the local machine "Trusted Root
+    Certification Authorities" and "Trusted Publishers" stores.
+  • The boot flag "testsigning": after a restart Windows shows "Test Mode" in
+    the bottom-right corner.
+  • The NL driver, device and service, only when the installation completes.
+NOT touched: third-party drivers (UAD, Focusrite, VB-CABLE), UAD Console,
+Windows audio settings, and Secure Boot (you disable it manually in the
+firmware; setup never changes it).
+
+GOING BACK TO A STANDARD STATE
+ 1. Uninstall NL Audio Matrix: Settings > Apps > NL Audio Matrix > Uninstall
+    (or Setup > Uninstall). It removes app, driver, device, certificate and
+    endpoints; user profiles stay in %APPDATA%\NL Audio Matrix.
+ 2. Open a command prompt as administrator and run:
+        bcdedit /set testsigning off
+ 3. Restart the PC: the "Test Mode" watermark disappears and Windows loads only
+    normally signed drivers again.
+ 4. If you disabled Secure Boot to try the NL driver, re-enable it in the
+    firmware: restart, enter the BIOS/UEFI (usually F2, F10, F12 or Del at
+    power-on), find "Secure Boot" under Boot or Security, set it to Enabled,
+    save and exit. No program or script can do this step: it is a firmware
+    setting and must be done by hand.
+ 5. If you disabled "Memory integrity" (HVCI), turn it back on in Windows
+    Security > Device security > Core isolation.
+
+IF YOU NEVER CHANGED ANYTHING
+On many PCs Secure Boot is already disabled: only test signing (which setup can
+enable, with explicit consent) and a restart are needed. To use NL Audio Matrix
+without the NL driver (portable package, third-party endpoints) you need
+neither test signing nor Secure Boot disabled.
+
+ANTIVIRUS NOTE
+This package contains no script that changes the firmware or boot protections:
+disabling Secure Boot is a manual BIOS/UEFI step. Setup only touches files, the
+registry and the "testsigning" boot flag, and only with explicit consent.

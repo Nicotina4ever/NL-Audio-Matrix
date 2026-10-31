@@ -1324,6 +1324,20 @@ internal sealed class SetupWizard : Form
 
         var sb = new StringBuilder();
         sb.AppendLine(resultSummary);
+        if (success && options.Mode == "uninstall")
+        {
+            sb.AppendLine();
+            sb.AppendLine(T("Se avevi attivato la firma di test o disattivato Secure Boot per il driver NL, puoi tornare a uno stato standard:",
+                            "If you enabled test signing or disabled Secure Boot for the NL driver, you can go back to a standard state:"));
+            sb.AppendLine(T("  1. prompt come amministratore: bcdedit /set testsigning off",
+                            "  1. administrator prompt: bcdedit /set testsigning off"));
+            sb.AppendLine(T("  2. riavvia: il watermark «Modalità test» sparisce",
+                            "  2. restart: the «Test Mode» watermark disappears"));
+            sb.AppendLine(T("  3. riattiva Secure Boot nel BIOS/UEFI, se lo avevi disattivato",
+                            "  3. re-enable Secure Boot in the BIOS/UEFI if you had disabled it"));
+            sb.AppendLine(T("  4. riattiva «Integrità memoria» in Sicurezza di Windows, se lo avevi disattivato",
+                            "  4. re-enable «Memory integrity» in Windows Security if you had disabled it"));
+        }
         if (!success)
         {
             sb.AppendLine();
@@ -1338,8 +1352,12 @@ internal sealed class SetupWizard : Form
         if (pending.Pending)
         {
             sb.AppendLine();
-            sb.AppendLine(T("Riavvio in sospeso: al prossimo accesso Setup completerà e verificherà l'installazione.",
-                            "Reboot pending: at the next sign-in Setup will complete and verify the installation."));
+            if (options.RegisterPostRebootVerify)
+                sb.AppendLine(T("Riavvio in sospeso: al prossimo accesso una verifica automatica controllerà driver, endpoint e applicazione.",
+                                "Reboot pending: at the next sign-in an automatic check verifies driver, endpoints and application."));
+            else
+                sb.AppendLine(T("Riavvio necessario: dopo il riavvio avvia di nuovo Setup (Ripara) per installare il driver e verificare gli 8 endpoint.",
+                                "Reboot required: after the restart run Setup again (Repair) to install the driver and verify the eight endpoints."));
         }
         sb.AppendLine();
         sb.AppendLine("Log: " + logPath);
@@ -1495,6 +1513,20 @@ internal sealed class SetupWizard : Form
                         "  Control Panel → Apps → NL Audio Matrix → Uninstall (or Setup, «Uninstall»)."));
         sb.AppendLine(T("  Rimuove app, driver, certificato e voci di registro; conserva i profili utente.",
                         "  Removes app, driver, certificate and registry entries; keeps user profiles."));
+        sb.AppendLine();
+        sb.AppendLine(T("Tornare a uno stato Windows standard", "Going back to a standard Windows state"));
+        sb.AppendLine(T("  1. Dopo la disinstallazione, prompt come amministratore: bcdedit /set testsigning off",
+                        "  1. After uninstalling, in an administrator prompt: bcdedit /set testsigning off"));
+        sb.AppendLine(T("  2. Riavvia: il watermark «Modalità test» sparisce.",
+                        "  2. Restart: the «Test Mode» watermark disappears."));
+        sb.AppendLine(T("  3. Se avevi disattivato Secure Boot, riattivalo nel BIOS/UEFI (F2, F10, F12 o Canc;",
+                        "  3. If you disabled Secure Boot, re-enable it in the BIOS/UEFI (F2, F10, F12 or Del;"));
+        sb.AppendLine(T("     sezione Boot/Security). È manuale: nessun programma può farlo.",
+                        "     Boot/Security section). It is manual: no program can do it."));
+        sb.AppendLine(T("  4. Se avevi disattivato «Integrità memoria», riattivala in Sicurezza di Windows.",
+                        "  4. If you disabled «Memory integrity», turn it back on in Windows Security."));
+        sb.AppendLine(T("  Gli stessi passi sono nel file LEGGIMI-SICUREZZA.txt in C:\\NLMatrix.",
+                        "  The same steps are in LEGGIMI-SICUREZZA.txt in C:\\NLMatrix."));
         sb.AppendLine();
         sb.AppendLine(T("Exit code (per uso da riga di comando)", "Exit codes (command line)"));
         sb.AppendLine(T("  0 successo · 9 endpoint/driver non sani · 12 configurazione di sicurezza che blocca il driver",

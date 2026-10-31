@@ -1624,7 +1624,7 @@ internal static class NlAppFiles
         CopyDirectory(System.IO.Path.Combine(payloadRoot, "app"), appDir, false, log);
         CopyDirectory(System.IO.Path.Combine(payloadRoot, "driver"), System.IO.Path.Combine(appDir, "driver"), false, log);
         CopyDirectory(System.IO.Path.Combine(payloadRoot, "licenses"), System.IO.Path.Combine(appDir, "LICENSES"), false, log);
-        foreach (var name in new[] { "BUILD_INFO.json", "VERSION.txt", "SHA256SUMS.txt" })
+        foreach (var name in new[] { "BUILD_INFO.json", "VERSION.txt", "SHA256SUMS.txt", "LEGGIMI-SICUREZZA.txt" })
         {
             string source = System.IO.Path.Combine(payloadRoot, name);
             if (File.Exists(source))

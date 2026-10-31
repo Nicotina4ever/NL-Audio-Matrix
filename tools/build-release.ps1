@@ -1,4 +1,4 @@
-﻿
+
 param(
     [string]$Configuration = 'Release',
     [string]$OutputRoot = '',
@@ -73,6 +73,7 @@ $versionText = @(
     "builtUtc=$builtUtc"
 ) -join [Environment]::NewLine
 Set-Content (Join-Path $stagingRoot 'VERSION.txt') -Value ($versionText + [Environment]::NewLine) -Encoding ASCII
+Copy-Item (Join-Path $root 'installer\LEGGIMI-SICUREZZA.txt') (Join-Path $stagingRoot 'LEGGIMI-SICUREZZA.txt') -Force
 
 # Build the uninstaller and the read-only verifier into the installer app payload.
 # The setup helpers are shared with the installer (NLSetupCommon.cs).
@@ -126,7 +127,7 @@ New-Item -ItemType Directory -Force -Path $payload | Out-Null
 Copy-Item $app (Join-Path $payload 'app') -Recurse -Force
 Copy-Item $driver (Join-Path $payload 'driver') -Recurse -Force
 Copy-Item $licenses (Join-Path $payload 'licenses') -Recurse -Force
-foreach ($name in @('BUILD_INFO.json','VERSION.txt','SHA256SUMS.txt')) {
+foreach ($name in @('BUILD_INFO.json','VERSION.txt','SHA256SUMS.txt','LEGGIMI-SICUREZZA.txt')) {
     Copy-Item (Join-Path $stagingRoot $name) (Join-Path $payload $name) -Force
 }
 # Never ship signing material: the public test certificate only, no private key.
@@ -163,6 +164,7 @@ Copy-Item $router (Join-Path $portable 'NLMatrixRouter.exe') -Force
 Copy-Item $licenses (Join-Path $portable 'LICENSES') -Recurse -Force
 Copy-Item (Join-Path $stagingRoot 'BUILD_INFO.json') (Join-Path $portable 'BUILD_INFO.json') -Force
 Copy-Item (Join-Path $stagingRoot 'VERSION.txt') (Join-Path $portable 'VERSION.txt') -Force
+Copy-Item (Join-Path $stagingRoot 'LEGGIMI-SICUREZZA.txt') (Join-Path $portable 'LEGGIMI-SICUREZZA.txt') -Force
 $readme = @"
 NL Audio Matrix $version — portable user-mode package
 ====================================================
@@ -318,12 +320,14 @@ IL DRIVER È FIRMATO PER TEST
 
 REQUISITI DI WINDOWS
   • Windows 10/11 x64 (build 19041 o successiva)
-  • Firma di test attiva: il setup può attivarla solo con il tuo consenso esplicito
-  • Secure Boot disattivato se presente (modifica manuale nel firmware)
+  • Firma di test attiva (TESTSIGNING): il setup può attivarla solo con il tuo
+    consenso esplicito; diventa effettiva solo dopo un riavvio
+  • Secure Boot disattivato, se è attivo sul PC (modifica manuale nel firmware):
+    firma di test e Secure Boot non possono convivere
   • Integrità memoria (HVCI) disattivata se attiva
-  Queste modifiche riducono le protezioni di avvio di quel PC: usale solo su un
-  PC di test o accettandone le conseguenze. Su un Windows standard senza modalità
-  test usa la portable.
+  Su molti PC Secure Boot è già disattivato: in quel caso serve solo la firma di
+  test e un riavvio. Queste impostazioni riducono le protezioni di avvio di quel
+  PC: su un Windows standard senza modalità test usa il pacchetto portable.
 
 PC OEM/PREASSEMBLATI O ASSEMBLATI CON SECURE BOOT ATTIVO
   1. Riavvia nel firmware (BIOS/UEFI) e disattiva Secure Boot. È una modifica
@@ -353,12 +357,26 @@ RIMOZIONE
   Impostazioni → App → NL Audio Matrix → Disinstalla, oppure Setup → Disinstalla.
   Rimuove app, driver, certificato ed endpoint; conserva i profili utente.
 
+TORNARE A UNO STATO STANDARD (dopo la disinstallazione)
+  1. Prompt dei comandi come amministratore: bcdedit /set testsigning off
+  2. Riavvia: il watermark «Modalità test» sparisce e Windows torna a caricare
+     solo driver con firma normale.
+  3. Se avevi disattivato Secure Boot nel firmware per provare il driver NL,
+     riattivalo: riavvia, entra nel BIOS/UEFI (di solito F2, F10, F12 o Canc),
+     cerca «Secure Boot» nella sezione Boot/Security, imposta Enabled, salva ed
+     esci. È un passo manuale: nessun programma o script può farlo al posto tuo.
+  4. Se avevi disattivato «Integrità memoria» (HVCI), riattivala da Sicurezza di
+     Windows → Sicurezza del dispositivo → Isolamento core.
+  Gli stessi passi sono nel file LEGGIMI-SICUREZZA.txt copiato in C:\NLMatrix
+  (e incluso in questo pacchetto).
+
 LOG E REPORT
   %TEMP%\NLMatrixSetup-<modalità>.log
   %ProgramData%\NL Audio Matrix\reports\last-diagnose.txt / last-verify.json
 "@
 $guide = Repair-Text $guide
 Set-Content -Path (Join-Path $releaseDir 'GUIDA-INSTALLAZIONE.txt') -Value $guide -Encoding UTF8
+Copy-Item (Join-Path $root 'installer\LEGGIMI-SICUREZZA.txt') (Join-Path $releaseDir 'LEGGIMI-SICUREZZA.txt') -Force
 
 # Asset-level manifest for the GitHub pre-release: written last so it covers
 # every asset of this folder (its own file is excluded by definition).
