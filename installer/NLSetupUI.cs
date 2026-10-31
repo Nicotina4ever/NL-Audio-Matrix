@@ -1026,6 +1026,13 @@ internal sealed class SetupWizard : Form
                             "The current configuration allows loading the test-signed driver."));
             lblSecurityHeadline.ForeColor = OkColor;
         }
+        else if (security.TestSigning == "reboot-required")
+        {
+            sb.AppendLine(T("La firma di test è configurata ma diventa attiva solo dopo il riavvio: Setup installa ora il programma e completa il driver al prossimo avvio.",
+                            "Test signing is configured but only takes effect after a restart: Setup installs the application now and completes the driver after the next start."));
+            foreach (var line in security.Guidance) sb.AppendLine("• " + line);
+            lblSecurityHeadline.ForeColor = WarnColor;
+        }
         else if (security.Verdict == "blocked")
         {
             sb.AppendLine(T("Questa configurazione di Windows blocca il driver firmato per test.",
@@ -1140,7 +1147,12 @@ internal sealed class SetupWizard : Form
                                 "NL Audio Matrix Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
-            if (scan != null && scan.Security != null && scan.Security.Verdict == "blocked")
+            // A boot that has test signing configured but not yet applied is not a
+            // dead end: setup installs the application now and finishes the driver
+            // after the restart, so it must not block the wizard.
+            bool testSigningNeedsReboot = scan != null && scan.Security != null &&
+                                          scan.Security.TestSigning == "reboot-required";
+            if (!testSigningNeedsReboot && scan != null && scan.Security != null && scan.Security.Verdict == "blocked")
             {
                 MessageBox.Show(this,
                     T("La configurazione di sicurezza di Windows blocca il driver firmato per test:\r\n\r\n",
@@ -1148,15 +1160,6 @@ internal sealed class SetupWizard : Form
                     scan.Security.BlockReason + "\r\n\r\n" +
                     T("Segui le istruzioni mostrate nella pagina Opzioni (o premi «Guida e requisiti») e riavvia Setup. Setup non modifica Secure Boot, HVCI o la configurazione di avvio.",
                       "Follow the instructions on the Options page (or open «Guide and requirements») and start Setup again. Setup does not change Secure Boot, HVCI or the boot configuration."),
-                    "NL Audio Matrix Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-            if (scan != null && scan.Security != null &&
-                scan.Security.TestSigning == "reboot-required")
-            {
-                MessageBox.Show(this,
-                    T("La firma di test di Windows è configurata, ma questo avvio non è partito con essa attiva: il driver NL non può caricare finché Windows non viene riavviato.\r\n\r\nRiavvia il PC e avvia di nuovo Setup: non occorre reinstallare nulla e nessuna impostazione viene modificata.",
-                      "Windows test signing is configured, but this boot did not start with it: the NL driver cannot load until Windows restarts.\r\n\r\nRestart the PC and start Setup again: nothing has to be reinstalled and no setting is changed."),
                     "NL Audio Matrix Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }

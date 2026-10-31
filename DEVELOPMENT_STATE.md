@@ -608,5 +608,11 @@ Prossimo lavoro: funzionalita' Quick Connect in GUI, routing bidirezionale, mixe
   diagnostica/verify espone `enabled | reboot-required | disabled | unknown`.
 - Verifica VM: `NLMatrixSetup.exe --mode install /silent` -> exit 0, driver 10/31 14.52.34.330,
   8/8 endpoint; log `Kernel Code Integrity: options=0x00280207 testSigningActive=True`.
+- **Riavvio pendente**: il wizard non blocca piu'. Se il test signing e' configurato ma non ancora
+  attivo, il setup installa l'applicazione, lascia intatti driver/servizio e termina con exit 20
+  offrendo «Riavvia ora»; dopo il riavvio un nuovo avvio del setup completa driver e 8 endpoint.
+- Nota Fast Startup: su Windows lo spegnimento/accensione non rilegge la configurazione di avvio;
+  serve un riavvio completo perche' `testsigning` diventi attivo (verificato sull'host: nessun
+  riavvio dal 29/10 07:55, nessun watermark Test Mode).
 
 

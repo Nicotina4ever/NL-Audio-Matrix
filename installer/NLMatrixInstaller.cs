@@ -805,22 +805,30 @@ internal static class Installer
         }
         if (!signingActive)
         {
-            if (signingConfigured)
-                throw new SetupException(12,
-                    "Windows test signing is configured in the boot entry, but the running kernel did not boot with it, " +
-                    "so the test-signed NLMatrix driver cannot load (error 577 / 0xC0000428).\r\n\r\n" +
-                    "Nothing was changed and nothing has to be reinstalled: restart Windows and run setup again.\r\n" +
-                    "If the kernel still reports test signing off after the restart, check that this PC really boots the " +
-                    "entry you edited (bcdedit /enum {current}), and check Secure Boot and Memory integrity (HVCI).");
-            if (!options.AcceptTestSigning)
-                throw new SetupException(12,
-                    "Windows test signing is not enabled, so the test-signed NLMatrix driver cannot load.\r\n\r\n" +
-                    "Nothing was changed. Either enable test signing yourself (bcdedit /set testsigning on, then reboot) " +
-                    "or re-run setup with /accept-testsigning if you accept that Windows change.");
-            log.Step("Enabling Windows test signing (explicitly accepted with /accept-testsigning)");
-            NlDevices.EnableTestSigning(log);
+            if (!signingConfigured)
+            {
+                if (!options.AcceptTestSigning)
+                    throw new SetupException(12,
+                        "Windows test signing is not enabled, so the test-signed NLMatrix driver cannot load.\r\n\r\n" +
+                        "Nothing was changed. Either enable test signing yourself (bcdedit /set testsigning on, then reboot) " +
+                        "or re-run setup with /accept-testsigning if you accept that Windows change.");
+                log.Step("Enabling Windows test signing (explicitly accepted with /accept-testsigning)");
+                NlDevices.EnableTestSigning(log);
+                repairs.Add("test signing enabled (reboot required)");
+            }
+            else
+            {
+                log.Warn("Test signing is configured in the boot entry, but this boot did not start with it.");
+            }
+            // The package cannot load yet, so leave the driver package, the device and
+            // the service exactly as they are: setup installs the application now and
+            // finishes the driver when Windows is restarted with test signing active.
+            log.Warn("The NLMatrix driver package, device and service are left untouched until Windows restarts; " +
+                     "run setup again (Ripara) after the reboot to finish the driver.");
+            options.RegisterPostRebootVerify = false;
             rebootRequired = true;
-            repairs.Add("test signing enabled (reboot required)");
+            repairs.Add("driver installation deferred until after the reboot");
+            return;
         }
 
         if (state.LegacyPresent)
@@ -1082,7 +1090,8 @@ internal static class Installer
                               : ""));
 
         if (rebootRequired)
-            sb.AppendLine("\r\nA reboot is required to finish setup. Run --mode repair after the reboot to complete the driver installation.");
+            sb.AppendLine("\r\nA reboot is required to finish setup. After the restart run NLMatrixSetup again (Ripara) " +
+                          "to install the driver and verify the eight NL endpoints.");
 
         sb.AppendLine("Log: " + logPath);
         return sb.ToString();
