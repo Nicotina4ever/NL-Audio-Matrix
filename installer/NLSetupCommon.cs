@@ -1160,7 +1160,12 @@ internal static class NlDevices
         var result = Sys.Run("sc.exe", "start " + NlConst.ServiceName, 120000);
         log.Command(result);
         if (result.ExitCode != 0 && result.ExitCode != 1056)
+        {
             log.Warn("sc start " + NlConst.ServiceName + " returned exit " + result.ExitCode + ".");
+            if (!IsTestSigningActive(log))
+                log.Warn("Kernel Code Integrity reports test signing as NOT active in this boot, so a test-signed driver " +
+                         "cannot load no matter how the package is signed: Windows must restart with test signing in effect.");
+        }
         for (int i = 0; i < attempts; i++)
         {
             if (ServiceRunning(log)) return true;
@@ -1249,6 +1254,49 @@ internal static class NlDevices
                               RegexOptions.IgnoreCase)) return true;
         }
         return false;
+    }
+
+    [DllImport("ntdll.dll")]
+    private static extern int NtQuerySystemInformation(int infoClass, IntPtr info, int length, out int returnLength);
+
+    // Live kernel state, not the boot configuration.  Bit 0x2 is the test-signing
+    // flag Code Integrity applies to every driver image load; bcdedit can report
+    // "testsigning Yes" while the running kernel booted without it, and then each
+    // test-signed driver fails with 577 / 0xC0000428 and a CodeIntegrity 3004.
+    public static bool TryGetCodeIntegrityOptions(out uint options)
+    {
+        options = 0;
+        try
+        {
+            IntPtr buffer = Marshal.AllocHGlobal(8);
+            try
+            {
+                for (int i = 0; i < 8; i++) Marshal.WriteByte(buffer, i, 0);
+                Marshal.WriteInt32(buffer, 0, 8);
+                int returned;
+                int status = NtQuerySystemInformation(103, buffer, 8, out returned);
+                if (status != 0) return false;
+                options = (uint)Marshal.ReadInt32(buffer, 4);
+                return true;
+            }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+        catch { return false; }
+    }
+
+    public static bool IsTestSigningActive(SetupLog log)
+    {
+        uint options;
+        if (!TryGetCodeIntegrityOptions(out options))
+        {
+            log.Warn("The live Code Integrity state could not be read.");
+            return false;
+        }
+        bool active = (options & 0x2) != 0;    // CODEINTEGRITY_OPTION_TESTSIGN
+        bool hvci = (options & 0x400) != 0;    // CODEINTEGRITY_OPTION_HVCI_KMCI_ENABLED
+        log.Info("Kernel Code Integrity: options=0x" + options.ToString("X8", CultureInfo.InvariantCulture) +
+                 " testSigningActive=" + active + " hvciKmci=" + hvci + ".");
+        return active;
     }
 
     public static bool EnableTestSigning(SetupLog log)

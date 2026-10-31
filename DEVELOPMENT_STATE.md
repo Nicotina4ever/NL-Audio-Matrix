@@ -592,4 +592,21 @@ Prossimo lavoro: funzionalita' Quick Connect in GUI, routing bidirezionale, mixe
   NL Mic 1, lo salva come ultima sessione e avvia il motore.
 - A21/A22 restano aperti e sospesi; nessuna nuova indagine sui toni.
 
+## Incremento 2026-10-31 15:20 — Test signing: stato live del kernel, causa del blocco host
+
+- **Causa del fallimento installazione host** (service 577, device Code 52, CodeIntegrity 3004):
+  il test signing era configurato in bcdedit (`testsigning Yes`) ma il kernel in esecuzione non era
+  partito con esso attivo. Code Integrity live: host `0x00202201` (bit `TESTSIGN` assente), VM
+  `0x00280207` (attivo). Ultimo avvio host 29/10 07:55, prima dell'abilitazione del test signing.
+- **Pacchetto driver corretto**: catalogo v2 SHA-256 e firma incorporata verificati offline
+  (`signtool verify /pa /c` -> "File is signed in catalog") e installati nella VM (stesso build
+  26300) con driver caricato e 8/8 endpoint attivi.
+- **Setup**: `NlDevices.TryGetCodeIntegrityOptions` / `IsTestSigningActive` leggono lo stato live
+  via `NtQuerySystemInformation(SystemCodeIntegrityInformation)`. Se il test signing e' configurato
+  ma non attivo nel boot corrente, il setup si ferma prima di toccare driver o servizio (exit 12)
+  spiegando che serve solo un riavvio; `sc start` fallito registra lo stato Code Integrity; la
+  diagnostica/verify espone `enabled | reboot-required | disabled | unknown`.
+- Verifica VM: `NLMatrixSetup.exe --mode install /silent` -> exit 0, driver 10/31 14.52.34.330,
+  8/8 endpoint; log `Kernel Code Integrity: options=0x00280207 testSigningActive=True`.
+
 

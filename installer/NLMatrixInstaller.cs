@@ -793,18 +793,25 @@ internal static class Installer
             certificate.Dispose();
         }
 
-        bool signingEnabled = NlDevices.IsTestSigningEnabled(log);
-        if (!signingEnabled && state.DevicePresent && state.ServiceRunning)
+        bool signingConfigured = NlDevices.IsTestSigningEnabled(log);
+        bool signingActive = NlDevices.IsTestSigningActive(log);
+        if (!signingActive && state.DevicePresent && state.ServiceRunning)
         {
-            // Some localizations render the bcdedit boolean differently.  A loaded
-            // NLMatrix driver already proves that an active boot accepts the
+            // A loaded NLMatrix driver proves that this boot accepted the
             // test-signed package, so never force a spurious reboot in that case.
-            log.Warn("The test-signing state could not be confirmed from bcdedit, but the NLMatrix driver is " +
-                     "already loaded; assuming test signing is active.");
-            signingEnabled = true;
+            log.Warn("The NLMatrix driver is already loaded, so this boot accepted the test-signed package; " +
+                     "treating test signing as usable.");
+            signingActive = true;
         }
-        if (!signingEnabled)
+        if (!signingActive)
         {
+            if (signingConfigured)
+                throw new SetupException(12,
+                    "Windows test signing is configured in the boot entry, but the running kernel did not boot with it, " +
+                    "so the test-signed NLMatrix driver cannot load (error 577 / 0xC0000428).\r\n\r\n" +
+                    "Nothing was changed and nothing has to be reinstalled: restart Windows and run setup again.\r\n" +
+                    "If the kernel still reports test signing off after the restart, check that this PC really boots the " +
+                    "entry you edited (bcdedit /enum {current}), and check Secure Boot and Memory integrity (HVCI).");
             if (!options.AcceptTestSigning)
                 throw new SetupException(12,
                     "Windows test signing is not enabled, so the test-signed NLMatrix driver cannot load.\r\n\r\n" +

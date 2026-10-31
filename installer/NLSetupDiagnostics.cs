@@ -88,24 +88,26 @@ internal static class NlSecurity
         }
         catch (Exception ex) { info.Notes.Add("secure boot: " + ex.Message); }
 
-        // Test signing is a boot configuration element; bcdedit needs administrator.
+        // Test signing has two independent states: what the boot entry is
+        // configured to do (bcdedit) and what the running kernel actually
+        // applied (Code Integrity).  A configured-but-not-booted state is the
+        // classic reason a correctly signed test driver fails with 577.
         bool testSigningKnown = false;
+        bool testSigningConfigured = false;
         try
         {
             var result = Sys.Run("bcdedit.exe", "/enum {current}", 60000);
             if (result.Started && result.ExitCode == 0)
             {
                 testSigningKnown = true;
-                bool enabled = false;
                 foreach (var raw in result.OutputOrEmpty.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
                 {
                     string line = raw.Trim();
                     if (!line.StartsWith("testsigning", StringComparison.OrdinalIgnoreCase)) continue;
-                    enabled = line.IndexOf("Yes", StringComparison.OrdinalIgnoreCase) >= 0
+                    testSigningConfigured = line.IndexOf("Yes", StringComparison.OrdinalIgnoreCase) >= 0
                            || line.IndexOf("On", StringComparison.OrdinalIgnoreCase) >= 0
                            || line.IndexOf("Si", StringComparison.OrdinalIgnoreCase) >= 0;
                 }
-                info.TestSigning = enabled ? "enabled" : "disabled";
             }
             else
             {
@@ -114,6 +116,23 @@ internal static class NlSecurity
             }
         }
         catch (Exception ex) { info.Notes.Add("test signing: " + ex.Message); }
+
+        uint ciOptions;
+        bool liveKnown = NlDevices.TryGetCodeIntegrityOptions(out ciOptions);
+        bool liveActive = liveKnown && (ciOptions & 0x2) != 0;
+        if (liveKnown)
+        {
+            info.Notes.Add("kernel Code Integrity options=0x" + ciOptions.ToString("X8", CultureInfo.InvariantCulture) +
+                           (liveActive ? " (test signing active)" : " (test signing not active)"));
+            if (liveActive) info.TestSigning = "enabled";
+            else if (testSigningConfigured) info.TestSigning = "reboot-required";
+            else info.TestSigning = "disabled";
+        }
+        else
+        {
+            info.TestSigning = testSigningConfigured ? "unknown" : (testSigningKnown ? "disabled" : "unknown");
+            info.Notes.Add("test signing: the live Code Integrity state could not be read");
+        }
 
         // HVCI (Memory integrity) refuses unsigned/test-signed kernel images even
         // when test signing is on, so it is a hard blocker for this driver.
@@ -164,6 +183,16 @@ internal static class NlSecurity
             info.BlockReason = "HVCI (Memory integrity) is enabled and rejects test-signed kernel drivers.";
             info.Guidance.Add("Open Windows Security > Device security > Core isolation details and turn Memory integrity off.");
             info.Guidance.Add("Reboot Windows, then run setup again. Setup never changes this setting itself.");
+            return;
+        }
+        if (info.TestSigning == "reboot-required")
+        {
+            info.Verdict = "blocked";
+            info.BlockReason = "Windows test signing is configured in the boot entry but this boot did not start with it, " +
+                               "so a test-signed kernel driver cannot load until Windows restarts.";
+            info.Guidance.Add("Restart Windows, then run setup again: nothing has to be reinstalled and no setting is changed.");
+            info.Guidance.Add("If the kernel still reports test signing off after the restart, verify that the PC boots the " +
+                              "entry you edited (bcdedit /enum {current}) and that Memory integrity (HVCI) is off.");
             return;
         }
         if (info.SecureBoot == "enabled" && info.TestSigning == "enabled")

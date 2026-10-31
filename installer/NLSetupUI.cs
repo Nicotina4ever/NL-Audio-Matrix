@@ -1152,6 +1152,15 @@ internal sealed class SetupWizard : Form
                 return;
             }
             if (scan != null && scan.Security != null &&
+                scan.Security.TestSigning == "reboot-required")
+            {
+                MessageBox.Show(this,
+                    T("La firma di test di Windows è configurata, ma questo avvio non è partito con essa attiva: il driver NL non può caricare finché Windows non viene riavviato.\r\n\r\nRiavvia il PC e avvia di nuovo Setup: non occorre reinstallare nulla e nessuna impostazione viene modificata.",
+                      "Windows test signing is configured, but this boot did not start with it: the NL driver cannot load until Windows restarts.\r\n\r\nRestart the PC and start Setup again: nothing has to be reinstalled and no setting is changed."),
+                    "NL Audio Matrix Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            if (scan != null && scan.Security != null &&
                 scan.Security.TestSigning == "disabled" && !chkAcceptTestSigning.Checked)
             {
                 MessageBox.Show(this,
