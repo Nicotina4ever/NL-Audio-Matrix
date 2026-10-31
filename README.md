@@ -48,13 +48,15 @@ driver/              SysVAD fork NLMatrix: sorgenti kernel, IOCTL ABI v3, test/
 tools/               build-app.ps1, analyzer continuità, latency, deploy VM
   vm/                harness di collaudo + README operativo
 vm/                  ESCLUSO dal repository: VM, config, profili, evidenze,
-                     binari congelati e baseline (NON spostare/cancellare)
+                     binari congelati e baseline (NON spostare/cancellare);
+                     lo scratch di sessione obsoleto è archiviato in da_eliminare/
 reports/             TEST_STATUS.md + evidenze engine/A/B/GUI (log, JSON, WAV)
 docs/                ENGINE_V2.md, 08_TOOLCHAIN_BUILD.md, 11_RISKS_LICENSES.md
 docs/history/        documenti storici/superati (non canonici)
 assets/ config/ installer/   icone, schema preset, sorgenti installer
-da_eliminare/        materiale obsoleto spostato qui, reversibile; revisionare e
-                     cancellare solo dopo verifica
+da_eliminare/        materiale obsoleto archiviato per data (es.
+                     2026-10-31-cleanup/), reversibile; revisionare e cancellare
+                     solo dopo verifica
 ```
 
 Dipendenze vendorizzate (non modificarle): `JUCE/`, `Windows-driver-samples/`,
@@ -76,8 +78,8 @@ pwsh tools/build-app.ps1 -Targets NLMatrixRouter
 ```
 
 Gli eseguibili finiscono in `app/build/<Target>_artefacts/Release/`.
-La cache oggetti è stata spostata in `da_eliminare/…/build-cache-app-obj` per
-ridurre il disordine: la prima build dopo il cleanup ricompila (è rigenerabile).
+Gli artefatti intermedi restano fuori da Git e sono rigenerabili; il materiale
+archiviato per data è in `da_eliminare/` e si può cancellare a mano per liberare spazio.
 
 ## Uso rapido
 

@@ -468,6 +468,23 @@ Verified (full-rate VM window, same ABI3 driver, back-to-back A/B):
 - `.gitignore` aggiornato. Spazio non liberato finché `da_eliminare` non viene
   svuotata (spostamento sullo stesso disco).
 
+## Workspace cleanup (2026-10-31)
+
+- Cartelle esterne al progetto rimosse da `K:\AI`: `_usbip_eval`, `_delivery_tests`
+  e `_delivery_tools` spostate in `da_eliminare/2026-10-31-cleanup/esterni/`
+  (109 file, 303 MB; non referenziate da script o documenti).
+- Scratch della VM archiviato in `.../vm-scratch/` (530 file, 65 MB di log, WAV,
+  screenshot e batch di sessioni concluse). Restano in `vm/` solo VM (dischi e
+  stato sospeso), `baseline/`, `engine/`, `scripts/`, `caches/`,
+  `channel_split_evidence/`, `admin.txt` e `installers/` (installer Focusrite e
+  FlexASIO).
+- `app/build-gui/` (238 MB, non citato da script), `tools/__pycache__` e il
+  residuo `reports/tmp_listing.txt` spostati in `.../build-archiviati/` e
+  `.../varie/`.
+- Totale archiviato: 839 file / 606 MB in un'unica cartella datata, cancellabile
+  a mano per liberare spazio. Nessun file tracciato da Git è stato toccato; i
+  percorsi usati da harness, build e release restano validi.
+
 ## Open / next (current)
 
 1. **Hardware Focusrite** — il passthrough USB della VM non trasmette (ASIO non
