@@ -772,9 +772,15 @@ internal static class Installer
         string boundVersion = NlDevices.BoundDriverVersion(log, state.DriverPackages, NlConst.RootHwid);
         bool versionOk = NlText.SameVersion(boundVersion, payloadDriverVersion) ||
                          (boundVersion.Length == 0 && NlDrivers.HasVersion(state.DriverPackages, payloadDriverVersion));
-        bool healthy = state.DevicePresent && state.ServiceRunning;
+        // A present device with a stopped/unknown driver (for example after a
+        // reinstall cycle) is not healthy even when the service object exists: the
+        // endpoints cannot enumerate until the driver is bound and started again.
+        bool deviceHealthy = false;
+        try { deviceHealthy = NlPnp.Inspect(NlConst.RootHwid).Healthy; } catch { }
+        bool healthy = state.DevicePresent && state.ServiceRunning && deviceHealthy;
 
         log.Info("Driver check: devicePresent=" + state.DevicePresent +
+                 " deviceHealthy=" + deviceHealthy +
                  " serviceRunning=" + state.ServiceRunning +
                  " bound=" + NlText.DisplayVersion(boundVersion) +
                  " staged=[" + NlDrivers.DescribeInstalled(state.DriverPackages) + "]" +
@@ -822,8 +828,18 @@ internal static class Installer
             return;
         }
 
-        if (versionOk && state.DevicePresent && !state.ServiceRunning)
+        if (versionOk && state.DevicePresent && !healthy)
         {
+            if (!deviceHealthy && !string.IsNullOrEmpty(state.Devcon) && File.Exists(state.Devcon))
+            {
+                log.Step("Re-binding the NLMatrix driver to the existing device (devcon update)");
+                var rebind = Sys.Run(state.Devcon, "update " + Sys.Quote(inf) + " " + NlConst.RootHwid, 600000);
+                log.Command(rebind);
+                if (rebind.ExitCode == 1) rebootRequired = true;
+                else if (DevconReportedFailure(rebind))
+                    log.Warn("devcon update returned exit " + rebind.ExitCode + "; a reboot may be required.");
+                else repairs.Add("driver re-bound to the existing device");
+            }
             string status = NlDevices.StatusText(log, state.Devcon, NlConst.RootHwid);
             if (status.IndexOf("disabled", StringComparison.OrdinalIgnoreCase) >= 0 &&
                 !string.IsNullOrEmpty(state.Devcon))

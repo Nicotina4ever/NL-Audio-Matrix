@@ -647,5 +647,16 @@ Prossimo lavoro: funzionalita' Quick Connect in GUI, routing bidirezionale, mixe
 - **Log host del guasto**: nei log disponibili il setup invoca solo `bcdedit /enum`; nessuna riga
   "Enabling Windows test signing" e nessun riferimento a `flightsigning` nel codice. L'origine di
   TESTSIGNING/FLIGHTSIGNING sul PC principale non e' dimostrabile dai log: resta ipotesi.
+- **Esiti verificati (VM)**: audit statico PASS; cicli misurati install 3,6-5,6 s (exit 0),
+  repair 2,5 s (exit 0), uninstall con NL Mic 1 tenuto aperto 44,9 s (exit 20, riavvio),
+  uninstall a driver assente 22,7 s (exit 0), `bcdedit /enum {current}` byte-identico prima e
+  dopo install+repair+uninstall+reinstall. 13/14 controlli PASS; l'unico FAIL e' la ri-enumerazione
+  degli 8 endpoint dopo un reinstall su VM con registro endpoint rimasto sporco da molti cicli
+  rimozione/installazione: in quello stato il dispositivo resta "Arrestato/Sconosciuto" e il setup
+  esce con 9 invece di dichiarare successo. Con ciclo pulito (uninstall + rimozione device/package
+  + riavvio + install + riavvio) gli 8 endpoint tornano attivi e il driver risulta running.
+- **Nota**: ri-binding di un dispositivo rimasto "Sconosciuto" con `devcon update` non basta in
+  quello stato (exit 2); serve il ciclo pulito. Il setup ora rileva `deviceHealthy=False` e prova
+  il re-binding prima di dichiarare sano un device solo perche' il servizio esiste.
 
 
