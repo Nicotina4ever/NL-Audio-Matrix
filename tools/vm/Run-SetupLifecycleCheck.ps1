@@ -172,7 +172,7 @@ function Get-GuestState {
 
 function RunSetupMode {
     param([string]$Mode, [string]$Extra = '', [int]$TimeoutSec = 900)
-    $command = "$guestInstaller --mode $Mode /silent /accept-testsigning $Extra"
+    $command = "$guestInstaller --mode $Mode /silent $Extra"
     $result = NL-Exec $command -TimeoutSec $TimeoutSec
     $codes = [regex]::Matches($result, 'EXITCODE=(\d+)')
     $code = if ($codes.Count -gt 0) { [int] $codes[$codes.Count - 1].Groups[1].Value } else { -999 }

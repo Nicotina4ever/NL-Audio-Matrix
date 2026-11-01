@@ -6,7 +6,8 @@
 //
 // CLI
 //   NLMatrixSetup.exe [--mode install|repair|upgrade|uninstall|diagnose|verify]
-//                     [/silent] [/launch] [/dir=<path>] [/accept-testsigning]
+//                     [/silent] [/launch] [/dir=<path>]
+//                     [/app-selftest] [/register-post-reboot-verify]
 //                     [/app-selftest] [/register-post-reboot-verify]
 //
 //   /silent                 -> no UI (for deployment automation)
@@ -70,7 +71,6 @@ internal sealed class SetupOptions
     public bool ModeSpecified;
     public bool Silent;
     public bool Launch;
-    public bool AcceptTestSigning;
     public bool Help;
     public bool DirSpecified;
     public bool AppSelfTest;
@@ -124,7 +124,7 @@ internal static class Installer
             "  (install, upgrade, repair, uninstall and read-only diagnostics).\r\n" +
             "\r\n" +
             "  NLMatrixSetup.exe [--mode install|repair|upgrade|uninstall|diagnose|verify]\r\n" +
-            "                    [/silent] [/launch] [/dir=<path>] [/accept-testsigning]\r\n" +
+            "                    [/silent] [/launch] [/dir=<path>]\r\n" +
             "                    [/app-selftest] [/register-post-reboot-verify]\r\n" +
             "\r\n" +
             "Modes:\r\n" +
@@ -139,8 +139,6 @@ internal static class Installer
             "  /silent           No UI (for deployment automation)\r\n" +
             "  /launch           Start NL Audio Matrix after a successful install/repair/upgrade\r\n" +
             "  /dir=<path>       Installation folder (default C:\\NLMatrix)\r\n" +
-            "  /accept-testsigning  Allow setup to enable Windows test signing when the\r\n" +
-            "                       test-signed NL driver needs it (never done silently)\r\n" +
             "  /register-post-reboot-verify  Ask the next logon to verify the installation\r\n" +
             "  /? --help         Show this help\r\n" +
             "\r\n" +
@@ -180,7 +178,7 @@ internal static class Installer
         {
             PrintUsage("");
             if (!options.Silent)
-                MessageBox.Show(UsageText(), AppName + " Setup", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                NlUi.Show(UsageText(), AppName + " Setup", MessageBoxIcon.Information);
             return 0;
         }
 
@@ -255,19 +253,14 @@ internal static class Installer
 
     internal static void RecordPendingReboot(SetupOptions options, SetupLog log, int exitCode, bool rebootRequired)
     {
-        if (!rebootRequired)
-        {
-            if (exitCode == 0 && options.Mode != "uninstall") NlPostReboot.Remove(log);
-            return;
-        }
+        if (!rebootRequired) return;
         if (exitCode != 20) return;
         string phase = options.Mode == "uninstall" ? "uninstall"
                      : options.Mode == "repair" ? "repair"
                      : options.Mode == "upgrade" ? "upgrade" : "install";
         string version = NlDiagnostics.ReadVersionValue(options.AppDir, "version");
         NlPendingReboot.Write(log, phase, options.AppDir, version);
-        bool scheduled = options.Mode != "uninstall" && NlPostReboot.Register(log, options.AppDir);
-        if (!scheduled && options.RegisterPostRebootVerify && options.Mode != "uninstall")
+        if (options.RegisterPostRebootVerify && options.Mode != "uninstall")
             NlPendingReboot.RegisterRunOnce(log, options.AppDir);
     }
 
@@ -295,10 +288,6 @@ internal static class Installer
             else if (lower == "/launch" || lower == "--launch")
             {
                 options.Launch = true;
-            }
-            else if (lower == "/accept-testsigning" || lower == "--accept-testsigning")
-            {
-                options.AcceptTestSigning = true;
             }
             else if (lower == "/app-selftest" || lower == "--app-selftest")
             {
@@ -372,21 +361,20 @@ internal static class Installer
     private static void ShowInfo(string text, bool warning)
     {
         if (!string.IsNullOrEmpty(text)) Console.WriteLine(text);
-        MessageBox.Show(text, AppName + " Setup", MessageBoxButtons.OK,
-                        warning ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+        NlUi.Show(text, AppName + " Setup", warning ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
     }
 
     private static void ShowError(string text, bool silent)
     {
         if (!string.IsNullOrEmpty(text)) Console.WriteLine("ERROR: " + text);
         if (!silent)
-            MessageBox.Show(text, AppName + " Setup", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            NlUi.Show(text, AppName + " Setup", MessageBoxIcon.Error);
     }
 
     // ---------------------------------------------------------------- uninstall
     private static int RunUninstallMode(SetupOptions options, SetupLog log, out string summary)
     {
-        if (!options.Silent)
+        if (!options.Silent && NlUi.CanShowUi())
         {
             var answer = MessageBox.Show(
                 "Remove " + AppName + " and its virtual audio driver from this computer?\r\n\r\n" +
@@ -402,7 +390,6 @@ internal static class Installer
         }
 
         int exitCode;
-        NlPostReboot.Remove(log);
         var result = NlUninstall.Run(log, options.DirSpecified ? options.AppDir : null, out exitCode);
         summary = BuildUninstallSummary(result);
         if (!options.Silent) ShowInfo(summary, result.RebootRecommended);
@@ -590,6 +577,13 @@ internal static class Installer
 
             bool fresh = !state.AnyInstallation;
             var repairs = new List<string>();
+
+            // Requirement gate, read-only: if the test-signed driver cannot load in
+            // this boot, stop before touching files, certificates, devices or the
+            // BCD.  Setup has no code path that changes test signing, Secure Boot or
+            // HVCI: it only reads them and explains what the user has to do.
+            log.Step("Checking the test-signed driver requirements (read-only)");
+            NlDevices.RequireTestSigningActive(log);
 
             log.Step("Stopping NL Audio Matrix processes");
             NlAppFiles.StopKnownProcesses(log, options.AppDir);
@@ -799,43 +793,14 @@ internal static class Installer
             certificate.Dispose();
         }
 
-        bool signingConfigured = NlDevices.IsTestSigningEnabled(log);
-        bool signingActive = NlDevices.IsTestSigningActive(log);
-        if (!signingActive && state.DevicePresent && state.ServiceRunning)
-        {
-            // A loaded NLMatrix driver proves that this boot accepted the
-            // test-signed package, so never force a spurious reboot in that case.
-            log.Warn("The NLMatrix driver is already loaded, so this boot accepted the test-signed package; " +
-                     "treating test signing as usable.");
-            signingActive = true;
-        }
-        if (!signingActive)
-        {
-            if (!signingConfigured)
-            {
-                if (!options.AcceptTestSigning)
-                    throw new SetupException(12,
-                        "Windows test signing is not enabled, so the test-signed NLMatrix driver cannot load.\r\n\r\n" +
-                        "Nothing was changed. Either enable test signing yourself (bcdedit /set testsigning on, then reboot) " +
-                        "or re-run setup with /accept-testsigning if you accept that Windows change.");
-                log.Step("Enabling Windows test signing (explicitly accepted with /accept-testsigning)");
-                NlDevices.EnableTestSigning(log);
-                repairs.Add("test signing enabled (reboot required)");
-            }
-            else
-            {
-                log.Warn("Test signing is configured in the boot entry, but this boot did not start with it.");
-            }
-            // The package cannot load yet, so leave the driver package, the device and
-            // the service exactly as they are: setup installs the application now and
-            // finishes the driver when Windows is restarted with test signing active.
-            log.Warn("The NLMatrix driver package, device and service are left untouched until Windows restarts; " +
-                     "run setup again (Ripara) after the reboot to finish the driver.");
-            options.RegisterPostRebootVerify = false;
-            rebootRequired = true;
-            repairs.Add("driver installation deferred until after the reboot");
-            return;
-        }
+        // A loaded NLMatrix driver proves that this boot accepted the test-signed
+        // package.  Otherwise the driver cannot load, and setup must not touch the
+        // system: the requirement gate in RunSetup already refused that case before
+        // any change, so reaching it here means the state changed during the run.
+        if (!NlDevices.IsTestSigningActive(log) && !(state.DevicePresent && state.ServiceRunning))
+            throw new SetupException(12,
+                "Test signing is no longer active in this boot, so the test-signed NLMatrix driver cannot load.\r\n\r\n" +
+                "Nothing was changed: restart Windows and run setup again.");
 
         if (state.LegacyPresent)
         {
@@ -1096,8 +1061,9 @@ internal static class Installer
                               : ""));
 
         if (rebootRequired)
-            sb.AppendLine("\r\nA reboot is required to finish setup. Setup schedules the remaining driver work " +
-                          "to run automatically at the next sign-in; if it did not, run NLMatrixSetup again (Ripara).");
+            sb.AppendLine("\r\nA reboot is required to finish setup. After the restart run NLMatrixSetup again " +
+                          "(Ripara) to install the driver and verify the eight NL endpoints; setup does not " +
+                          "change test signing, Secure Boot or HVCI.");
 
         sb.AppendLine("Log: " + logPath);
         return sb.ToString();

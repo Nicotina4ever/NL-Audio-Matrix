@@ -278,7 +278,7 @@ $report = [ordered]@{
     manualSteps = @(
         if ($hvci -eq 'enabled') { 'Windows Security > Device security > Core isolation > turn Memory integrity off, then reboot.' }
         if ($secureBoot -eq 'enabled') { 'Disable Secure Boot in the firmware (BIOS/UEFI) settings on this PC; this reduces boot protection until a production-signed driver exists.' }
-        if ($testSigning -ne 'enabled') { 'Enable test signing: bcdedit /set testsigning on (administrator), then reboot, or let the NL setup do it with explicit consent.' }
+        if ($testSigning -ne 'enabled') { 'Enable test signing yourself (administrator: bcdedit /set testsigning on), reboot, then run the NL setup again. The setup never changes it.' }
         if ($pendingReboot) { 'Complete the pending Windows reboot before installing the driver.' }
     )
 }

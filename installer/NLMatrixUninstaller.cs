@@ -88,8 +88,7 @@ internal static class Uninstaller
             Console.WriteLine(UsageText());
             if (!Array.Exists(args, a => string.Equals(a, "/silent", StringComparison.OrdinalIgnoreCase) ||
                                           string.Equals(a, "--silent", StringComparison.OrdinalIgnoreCase)))
-                MessageBox.Show(ex.Message + "\r\n\r\n" + UsageText(), AppName + " Uninstall",
-                                MessageBoxButtons.OK, MessageBoxIcon.Error);
+                NlUi.Show(ex.Message + "\r\n\r\n" + UsageText(), AppName + " Uninstall", MessageBoxIcon.Error);
             log.Result(ex.ExitCode, ex.Message);
             log.Dispose();
             return ex.ExitCode;
@@ -99,7 +98,7 @@ internal static class Uninstaller
         {
             Console.WriteLine(UsageText());
             if (!options.Silent)
-                MessageBox.Show(UsageText(), AppName + " Uninstall", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                NlUi.Show(UsageText(), AppName + " Uninstall", MessageBoxIcon.Information);
             return 0;
         }
 
@@ -117,9 +116,7 @@ internal static class Uninstaller
                 throw new SetupException(2,
                     "NL Audio Matrix requires 64-bit Windows and the 64-bit uninstaller.");
 
-            if (!options.Silent)
-            {
-                var answer = MessageBox.Show(
+            if (!options.Silent && NlUi.CanShowUi()) { var answer = MessageBox.Show(
                     "Remove " + AppName + " and its virtual audio driver from this computer?\r\n\r\n" +
                     "User presets and configuration in %APPDATA%\\" + AppName + " will be kept.",
                     AppName + " - Uninstall", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
@@ -135,11 +132,7 @@ internal static class Uninstaller
 
             UninstallResult result = NlUninstall.Run(log, options.DirSpecified ? options.AppDir : null, out exitCode);
             summary = BuildSummary(result);
-            if (!options.Silent)
-            {
-                MessageBox.Show(summary, AppName + " - Uninstall", MessageBoxButtons.OK,
-                                result.RebootRecommended ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
-            }
+            if (!options.Silent) NlUi.Show(summary, AppName + " - Uninstall", result.RebootRecommended ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
             else
             {
                 Console.WriteLine(summary);
@@ -150,9 +143,7 @@ internal static class Uninstaller
         {
             log.Error("Uninstall failed: " + ex.Message);
             summary = "Uninstall failed:\r\n" + ex.Message;
-            if (!options.Silent)
-                MessageBox.Show(summary + "\r\n\r\nSee the log:\r\n" + log.Path,
-                                AppName + " Uninstall", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            if (!options.Silent) NlUi.Show(summary + "\r\n\r\nSee the log:\r\n" + log.Path, AppName + " Uninstall", MessageBoxIcon.Error);
             else
                 Console.WriteLine("ERROR: " + summary);
             exitCode = ex.ExitCode;
@@ -162,9 +153,7 @@ internal static class Uninstaller
         {
             log.Error("Unexpected error: " + ex);
             summary = "Uninstall failed with an unexpected error:\r\n" + ex.Message;
-            if (!options.Silent)
-                MessageBox.Show(summary + "\r\n\r\nSee the log:\r\n" + log.Path,
-                                AppName + " Uninstall", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            if (!options.Silent) NlUi.Show(summary + "\r\n\r\nSee the log:\r\n" + log.Path, AppName + " Uninstall", MessageBoxIcon.Error);
             else
                 Console.WriteLine("ERROR: " + summary);
             exitCode = 10;

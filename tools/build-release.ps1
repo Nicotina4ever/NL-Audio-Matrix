@@ -257,22 +257,31 @@ Built UTC: $builtUtc
    - Upgrade keeps presets/config and removes only obsolete NL driver packages;
      repair restores missing files/driver/service/endpoints; uninstall removes
      app, driver, certificate and entries while keeping user profiles.
-   - Setup never enables test signing unless you tick the explicit option (or
-     pass /accept-testsigning), and never changes Secure Boot or HVCI. On
-     OEM/self-built PCs with Secure Boot on, the wizard explains the manual
-     firmware step and its consequences instead of doing it.
-   - After a required reboot, an asInvoker helper verifies driver, device, the
-     eight endpoints and application start/stop at the next logon.
+   - Setup never enables test signing and never changes Secure Boot or HVCI: if
+     the driver cannot load in the current boot it stops before touching files,
+     certificates, devices or the boot configuration and explains what to do.
+     On OEM/self-built PCs with Secure Boot on, the wizard explains the manual
+     firmware step instead of doing it.
+   - If a reboot is needed after a driver change, setup says so; nothing is
+     scheduled in the boot configuration. A read-only helper verifies the
+     installation at the next sign-in.
+   - LEGGIMI-SICUREZZA.txt (IT/EN) is installed in the application folder and
+     shipped in this release: it explains what test signing and Secure Boot
+     change, and the exact manual steps to return to a standard Windows state
+     (bcdedit /set testsigning off, restart, re-enable Secure Boot in the
+     firmware, re-enable Memory integrity).
 
 ## Security configuration (read this before installing the driver)
 
 The driver is test-signed, so the target PC must allow it:
-  * Windows test signing on (bcdedit /set testsigning on) — the wizard can do it
-    only with your explicit consent;
+  * Windows test signing on (bcdedit /set testsigning on) — done by you: the setup
+    only reads this state and never changes it;
   * Secure Boot off on systems where it is enabled (manual firmware change);
   * Memory integrity (HVCI) off if it is enabled.
 These reduce boot/kernel protection on that PC. Without them use the portable
 package only. The installer never changes those settings on its own.
+To undo everything after uninstalling: see LEGGIMI-SICUREZZA.txt (also copied
+into the application folder) and the "going back" section of the guide.
 
 ## Diagnostics from the command line
 
@@ -320,8 +329,9 @@ IL DRIVER È FIRMATO PER TEST
 
 REQUISITI DI WINDOWS
   • Windows 10/11 x64 (build 19041 o successiva)
-  • Firma di test attiva (TESTSIGNING): il setup può attivarla solo con il tuo
-    consenso esplicito; diventa effettiva solo dopo un riavvio
+  • Firma di test attiva (TESTSIGNING): la abiliti tu, una volta, da un prompt
+    come amministratore; il setup la legge soltanto e non la modifica mai.
+    Diventa effettiva solo dopo un riavvio.
   • Secure Boot disattivato, se è attivo sul PC (modifica manuale nel firmware):
     firma di test e Secure Boot non possono convivere
   • Integrità memoria (HVCI) disattivata se attiva

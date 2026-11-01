@@ -81,7 +81,6 @@ internal sealed class SetupWizard : Form
 
     private TextBox txtDir;
     private CheckBox chkLaunch;
-    private CheckBox chkAcceptTestSigning;
     private Label lblSecurityHeadline;
     private Label lblSecurityText;
 
@@ -738,17 +737,6 @@ internal sealed class SetupWizard : Form
         };
         AddCardRow(securityCard, lblSecurityText, 0);
 
-        chkAcceptTestSigning = new CheckBox
-        {
-            AutoSize = true,
-            Margin = new Padding(0, 0, 0, 8)
-        };
-        Bind(chkAcceptTestSigning,
-            "Consenti a Setup di attivare la firma di test di Windows solo se necessario\r\n(bcdedit /set testsigning on; richiede un riavvio; riduce le protezioni di avvio)",
-            "Allow Setup to enable Windows test signing only if needed\r\n(bcdedit /set testsigning on; needs a reboot; lowers boot protection)");
-        chkAcceptTestSigning.Checked = false;
-        AddCardRow(securityCard, chkAcceptTestSigning, 0);
-
         var securityFooter = new Label
         {
             AutoSize = true,
@@ -1164,11 +1152,11 @@ internal sealed class SetupWizard : Form
                 return;
             }
             if (scan != null && scan.Security != null &&
-                scan.Security.TestSigning == "disabled" && !chkAcceptTestSigning.Checked)
+                scan.Security.TestSigning == "disabled")
             {
                 MessageBox.Show(this,
-                    T("La firma di test di Windows è disattivata: il driver NL non può essere caricato.\r\n\r\nAttiva l'opzione «Consenti a Setup di attivare la firma di test» oppure abilitala tu (bcdedit /set testsigning on) e riavvia.",
-                      "Windows test signing is off: the NL driver cannot load.\r\n\r\nTick «Allow Setup to enable Windows test signing» or enable it yourself (bcdedit /set testsigning on) and reboot."),
+                    T("La firma di test di Windows è disattivata: il driver NL non può essere caricato.\r\n\r\nSetup non modifica le impostazioni di Windows. Abilitala tu da un prompt come amministratore (bcdedit /set testsigning on), riavvia il PC e avvia di nuovo Setup.",
+                      "Windows test signing is off: the NL driver cannot load.\r\n\r\nSetup does not change Windows settings. Enable it yourself in an administrator prompt (bcdedit /set testsigning on), restart the PC and start Setup again."),
                     "NL Audio Matrix Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
@@ -1206,7 +1194,6 @@ internal sealed class SetupWizard : Form
         catch { options.DirSpecified = options.AppDir.Length > 0; }
         options.Silent = true; // the wizard reports the result itself
         options.Launch = chkLaunch.Checked && !isUninstall;
-        options.AcceptTestSigning = chkAcceptTestSigning.Checked;
         options.RegisterPostRebootVerify = !isUninstall;
 
         logPath = Path.Combine(Path.GetTempPath(), "NLMatrixSetup-" + mode + ".log");
@@ -1352,10 +1339,7 @@ internal sealed class SetupWizard : Form
         if (pending.Pending)
         {
             sb.AppendLine();
-            if (NlPostReboot.Scheduled)
-                sb.AppendLine(T("Riavvio in sospeso: al prossimo accesso Windows completerà da solo l'installazione del driver e verificherà gli 8 endpoint.",
-                                "Reboot pending: at the next sign-in Windows completes the driver installation and verifies the eight endpoints by itself."));
-            else if (options.RegisterPostRebootVerify)
+            if (options.RegisterPostRebootVerify)
                 sb.AppendLine(T("Riavvio in sospeso: al prossimo accesso una verifica automatica controllerà driver, endpoint e applicazione.",
                                 "Reboot pending: at the next sign-in an automatic check verifies driver, endpoints and application."));
             else
@@ -1467,17 +1451,17 @@ internal sealed class SetupWizard : Form
         sb.AppendLine(T("Il driver è firmato per test", "The driver is test-signed"));
         sb.AppendLine(T("  Il driver NL non ha una firma di produzione (WHQL/EV). Windows lo carica solo con la",
                         "  The NL driver has no production signature (WHQL/EV). Windows loads it only with"));
-        sb.AppendLine(T("  «firma di test» attiva (TESTSIGNING). Setup attiva la firma di test solo se selezioni",
-                        "  test signing on (TESTSIGNING). Setup enables test signing only if you tick the"));
-        sb.AppendLine(T("  esplicitamente l'opzione corrispondente; non modifica mai Secure Boot né HVCI.",
-                        "  matching option; it never changes Secure Boot or HVCI."));
+        sb.AppendLine(T("  «firma di test» attiva (TESTSIGNING). Setup non modifica questa impostazione: la",
+                        "  test signing on (TESTSIGNING). Setup never changes that setting: if it is off, setup"));
+        sb.AppendLine(T("  abiliti tu, oppure il setup si ferma spiegando cosa fare. Non modifica mai Secure Boot né HVCI.",
+                        "  stops and explains what to do. It never changes Secure Boot or HVCI."));
         sb.AppendLine();
         sb.AppendLine(T("PC con Secure Boot attivo (OEM/preassemblati o assemblati a mano)",
                         "PC with Secure Boot enabled (OEM/prebuilt or hand-built)"));
         sb.AppendLine(T("  1. Disattiva Secure Boot nel firmware (BIOS/UEFI) — operazione manuale, non eseguita da Setup.",
                         "  1. Disable Secure Boot in the firmware (BIOS/UEFI) — manual step, Setup does not do it."));
-        sb.AppendLine(T("  2. Abilita la firma di test: bcdedit /set testsigning on (oppure l'opzione nel setup) e riavvia.",
-                        "  2. Enable test signing: bcdedit /set testsigning on (or the Setup option) and reboot."));
+        sb.AppendLine(T("  2. Abilita la firma di test: bcdedit /set testsigning on, quindi riavvia.",
+                        "  2. Enable test signing: bcdedit /set testsigning on, then reboot."));
         sb.AppendLine(T("  3. Se anche «Integrità memoria» (HVCI) è attiva, disattivala in Sicurezza di Windows →",
                         "  3. If «Memory integrity» (HVCI) is also on, turn it off in Windows Security →"));
         sb.AppendLine(T("     Sicurezza del dispositivo → Isolamento core, poi riavvia.",

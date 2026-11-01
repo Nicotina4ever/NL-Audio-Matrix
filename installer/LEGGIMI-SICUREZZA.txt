@@ -38,16 +38,17 @@ COME TORNARE A UNO STATO STANDARD
     Sicurezza di Windows > Sicurezza del dispositivo > Isolamento core.
 
 SE NON AVETE MAI CAMBIATO NULLA
-Su molti PC Secure Boot è già disattivato: serve solo la firma di test (il
-setup può attivarla, su consenso esplicito) e un riavvio. Per usare NL Audio
+Su molti PC Secure Boot è già disattivato: serve solo abilitare la firma di test
+(lo fate voi, una volta, da un prompt come amministratore) e riavviare. Il setup
+non tocca mai questa impostazione: la legge e basta. Per usare NL Audio
 Matrix senza driver NL (pacchetto portable, con endpoint di altre marche) non
 servono né firma di test né Secure Boot disattivato.
 
 NOTA ANTIVIRUS
 In questo pacchetto non c'è nessuno script che modifichi il firmware o le
 protezioni di avvio: la disattivazione di Secure Boot si fa a mano nel
-BIOS/UEFI. Il setup agisce solo su file, registro e sul flag "testsigning",
-e solo con consenso esplicito.
+BIOS/UEFI. Il setup agisce solo su file, registro e driver NL; non modifica
+mai il flag "testsigning", Secure Boot o HVCI.
 
 ---------------------------------------------------------------------------
 
@@ -89,12 +90,13 @@ GOING BACK TO A STANDARD STATE
     Security > Device security > Core isolation.
 
 IF YOU NEVER CHANGED ANYTHING
-On many PCs Secure Boot is already disabled: only test signing (which setup can
-enable, with explicit consent) and a restart are needed. To use NL Audio Matrix
+On many PCs Secure Boot is already disabled: only test signing (which you
+enable yourself, once, from an administrator prompt) and a restart are needed.
+Setup never changes that setting: it only reads it. To use NL Audio Matrix
 without the NL driver (portable package, third-party endpoints) you need
 neither test signing nor Secure Boot disabled.
 
 ANTIVIRUS NOTE
 This package contains no script that changes the firmware or boot protections:
 disabling Secure Boot is a manual BIOS/UEFI step. Setup only touches files, the
-registry and the "testsigning" boot flag, and only with explicit consent.
+registry and the NL driver; it never changes "testsigning", Secure Boot or HVCI.

@@ -17,6 +17,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Windows.Forms;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
@@ -879,7 +880,7 @@ internal static class NlDrivers
                 continue;
             }
             var result = Sys.Run("pnputil.exe",
-                "/delete-driver " + Sys.Quote(package.PublishedName) + " /uninstall", 180000);
+                "/delete-driver " + Sys.Quote(package.PublishedName) + " /uninstall", 60000);
             log.Command(result);
             if (result.ExitCode == 0 || result.ExitCode == 3010 || result.ExitCode == 1641)
             {
@@ -898,14 +899,44 @@ internal static class NlDrivers
 
     public static bool DeleteInstalled(SetupLog log, out int removed, out bool rebootRequired)
     {
+        return DeleteInstalled(log, true, 45000, out removed, out rebootRequired);
+    }
+
+    // Deletes the NL packages from the DriverStore with a per-package deadline.  When
+    // a device still owns the package, pnputil blocks; that case is not retried here,
+    // it is reported as reboot-required and the uninstaller proceeds with the rest.
+    public static bool DeleteInstalled(SetupLog log, bool devicesRemoved, int perPackageMs,
+                                       out int removed, out bool rebootRequired)
+    {
         removed = 0;
         rebootRequired = false;
         bool allOk = true;
-        foreach (var package in FindInstalled(log))
+        var packages = FindInstalled(log);
+        if (packages.Count == 0)
+        {
+            log.Info("No NL driver package is staged in the DriverStore.");
+            return true;
+        }
+        if (!devicesRemoved)
+        {
+            log.Warn("The NL device is still present, so the driver packages are left in place; " +
+                     "restart Windows and run the uninstaller again to remove them.");
+            rebootRequired = true;
+            return false;
+        }
+        foreach (var package in packages)
         {
             var result = Sys.Run("pnputil.exe",
-                "/delete-driver " + Sys.Quote(package.PublishedName) + " /uninstall /force", 180000);
+                "/delete-driver " + Sys.Quote(package.PublishedName) + " /uninstall", perPackageMs);
             log.Command(result);
+            if (result.TimedOut)
+            {
+                allOk = false;
+                rebootRequired = true;
+                log.Warn("Driver package " + package.PublishedName + " is in use (pnputil did not answer within " +
+                         perPackageMs + " ms); restart Windows and run the uninstaller again.");
+                continue;
+            }
             switch (result.ExitCode)
             {
                 case 0:
@@ -1187,46 +1218,100 @@ internal static class NlDevices
             log.Warn("Could not remove service " + NlConst.ServiceName + " (exit " + result.ExitCode + ").");
     }
 
+    // Stops the NL driver service with a hard deadline.  A running audio driver with
+    // open clients cannot unload, and every removal call would block for minutes;
+    // the caller then marks the reboot instead of hanging.
+    public static bool StopService(SetupLog log, int timeoutMs)
+    {
+        if (!ServiceExists(log)) return true;
+        if (!ServiceRunning(log))
+        {
+            log.Info("Service " + NlConst.ServiceName + " is already stopped.");
+            return true;
+        }
+        var result = Sys.Run("sc.exe", "stop " + NlConst.ServiceName, timeoutMs);
+        log.Command(result);
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        while (watch.ElapsedMilliseconds < Math.Max(5000, timeoutMs))
+        {
+            if (!ServiceRunning(log))
+            {
+                log.Info("Service " + NlConst.ServiceName + " stopped.");
+                return true;
+            }
+            Thread.Sleep(500);
+        }
+        log.Warn("Service " + NlConst.ServiceName + " did not stop within " + timeoutMs +
+                 " ms; the device removal is deferred to the reboot.");
+        return false;
+    }
+
+    // Removes the NL device by exact PnP instance ID with a bounded budget.  devcon is
+    // not used here: on a busy device it blocks for the whole timeout.  Each call has
+    // its own deadline and a timeout is reported as reboot-required instead of being
+    // retried, so uninstall always ends in minutes and never hangs.
     public static bool RemoveDevice(SetupLog log, string devcon, string hwid, out bool rebootRequired)
     {
+        return RemoveDevice(log, devcon, hwid, 90000, out rebootRequired);
+    }
+
+    public static bool RemoveDevice(SetupLog log, string devcon, string hwid, int budgetMs, out bool rebootRequired)
+    {
         rebootRequired = false;
-        bool present = Exists(log, devcon, hwid);
+        bool present = Exists(log, "", hwid);
         if (!present)
         {
             log.Info("Device not present: " + hwid);
             return true;
         }
 
-        if (!string.IsNullOrEmpty(devcon) && File.Exists(devcon))
-        {
-            var result = Sys.Run(devcon, "remove " + hwid, 120000);
-            log.Command(result);
-            if (result.ExitCode == 1) rebootRequired = true;
-            else if (result.ExitCode != 0)
-                log.Warn("devcon remove " + hwid + " returned exit " + result.ExitCode + ".");
-        }
+        StopService(log, 20000);
 
-        if (!Exists(log, "", hwid)) return true;
-
-        // Robust fallback: remove the exact ROOT-enumerated instances with pnputil.
         var instances = RootInstanceIds(hwid);
         if (instances.Count == 0)
         {
-            log.Warn("Device " + hwid + " appears present but no Enum\\ROOT instance was found.");
+            log.Warn("Device " + hwid + " appears present but no PnP instance ID was found; a reboot is required.");
+            rebootRequired = true;
             return false;
         }
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         foreach (var instance in instances)
         {
-            var result = Sys.Run("pnputil.exe", "/remove-device " + Sys.Quote(instance), 120000);
+            if (watch.ElapsedMilliseconds > budgetMs)
+            {
+                log.Warn("Device removal budget (" + budgetMs + " ms) exhausted; " + instance +
+                         " is left to the reboot.");
+                rebootRequired = true;
+                break;
+            }
+            var result = Sys.Run("pnputil.exe", "/remove-device " + Sys.Quote(instance), 30000);
             log.Command(result);
-            if (result.ExitCode == 3010 || result.ExitCode == 1641) rebootRequired = true;
-            else if (result.ExitCode == 0) { }
-            else if (result.ExitCode == 1168 || result.ExitCode == 2)
+            if (result.ExitCode == 0)
+            {
+                log.Info("Removed device " + instance + ".");
+                continue;
+            }
+            if (result.ExitCode == 1168 || result.ExitCode == 2)
+            {
                 log.Info("Device " + instance + " is already absent.");
-            else
-                log.Warn("pnputil /remove-device " + instance + " returned exit " + result.ExitCode + ".");
+                continue;
+            }
+            if (result.ExitCode == 3010 || result.ExitCode == 1641)
+            {
+                rebootRequired = true;
+                continue;
+            }
+            log.Warn("Could not remove device " + instance + " (exit " + result.ExitCode + ") without blocking; " +
+                     "the reboot finishes the removal.");
+            rebootRequired = true;
         }
-        return !Exists(log, "", hwid);
+        if (Exists(log, "", hwid))
+        {
+            rebootRequired = true;
+            return false;
+        }
+        return true;
     }
 
     public static bool RestartDevice(SetupLog log, string devcon, string hwid, out bool rebootRequired)
@@ -1299,16 +1384,24 @@ internal static class NlDevices
         return active;
     }
 
-    public static bool EnableTestSigning(SetupLog log)
+    // Requirement gate: setup must refuse to modify Windows when the test-signed
+    // driver cannot load in this boot.  It only reads the state and explains; the
+    // installer has no code path that changes test signing, Secure Boot or HVCI.
+    public static void RequireTestSigningActive(SetupLog log)
     {
-        var result = Sys.Run("bcdedit.exe", "/set testsigning on", 60000);
-        log.Command(result);
-        if (!result.Started || result.ExitCode != 0)
+        if (IsTestSigningActive(log)) return;
+        if (IsTestSigningEnabled(log))
             throw new SetupException(12,
-                "Test signing could not be enabled (bcdedit exit " + result.ExitCode + "). " +
-                "Secure Boot or a Windows policy may block it. " + NlText.Clip(result.Output, 1000));
-        log.Warn("Test signing enabled; a reboot is required before the test-signed driver can load.");
-        return true;
+                "Windows test signing is configured in the boot entry but is not active in the running kernel, " +
+                "so the test-signed NLMatrix driver cannot load.\r\n\r\n" +
+                "Nothing was changed: restart Windows, then run setup again.\r\n" +
+                "If the kernel still reports test signing off after the restart, check that this PC boots the entry " +
+                "you configured (bcdedit /enum {current}) and that Memory integrity (HVCI) is off.");
+        throw new SetupException(12,
+            "Windows test signing is off, so the test-signed NLMatrix driver cannot load.\r\n\r\n" +
+            "Nothing was changed. Enable it yourself in an administrator prompt " +
+            "(bcdedit /set testsigning on), restart Windows, then run setup again. " +
+            "Setup never changes test signing, Secure Boot or HVCI.");
     }
 
     public static string BoundDriverVersion(SetupLog log, List<DriverPackageInfo> packages, string hwid)
@@ -1899,23 +1992,32 @@ internal static class NlUninstall
         catch (Exception ex) { log.Warn("Could not keep the verification helper: " + ex.Message); }
 
         bool reboot = false;
+        var uninstallWatch = System.Diagnostics.Stopwatch.StartNew();
+        log.Info("Removal budget: 5 minutes overall; every step has its own deadline and a busy device " +
+                 "is finished by the reboot instead of blocking the uninstaller.");
+
+        log.Step("Stopping the NLMatrix driver service (max 20 s)");
+        NlDevices.StopService(log, 20000);
 
         log.Step("Removing NL Matrix audio devices (only the NLMatrix hardware IDs)");
-        if (rootDevice || NlDevices.Exists(log, devcon, NlConst.RootHwid))
+        bool devicesGone = true;
+        if (rootDevice || NlDevices.Exists(log, "", NlConst.RootHwid))
         {
             bool deviceReboot;
-            bool removed = NlDevices.RemoveDevice(log, devcon, NlConst.RootHwid, out deviceReboot);
+            bool removed = NlDevices.RemoveDevice(log, devcon, NlConst.RootHwid, 90000, out deviceReboot);
             reboot |= deviceReboot;
+            devicesGone &= removed;
             if (removed) result.RemovedDevices++;
             else { result.Warnings.Add("The NLMatrix device (Root\\NLMatrixVirtualAudio) could not be removed; a reboot is required."); reboot = true; }
         }
         else log.Info("No " + NlConst.RootHwid + " device is present.");
 
-        if (legacyDevice || NlDevices.Exists(log, devcon, NlConst.LegacyHwid))
+        if (legacyDevice || NlDevices.Exists(log, "", NlConst.LegacyHwid))
         {
             bool deviceReboot;
-            bool removed = NlDevices.RemoveDevice(log, devcon, NlConst.LegacyHwid, out deviceReboot);
+            bool removed = NlDevices.RemoveDevice(log, devcon, NlConst.LegacyHwid, 45000, out deviceReboot);
             reboot |= deviceReboot;
+            devicesGone &= removed;
             if (removed) result.RemovedDevices++;
             else { result.Warnings.Add("The legacy device (Root\\sysvad_ComponentizedAudioSample) could not be removed; a reboot is required."); reboot = true; }
         }
@@ -1924,12 +2026,31 @@ internal static class NlUninstall
         log.Step("Removing the NLMatrix driver service");
         NlDevices.DeleteService(log);
 
-        log.Step("Removing NLMatrix driver packages from the DriverStore");
+        log.Step("Removing NLMatrix driver packages from the DriverStore (max 45 s each)");
         int removedPackages;
         bool packageReboot;
-        NlDrivers.DeleteInstalled(log, out removedPackages, out packageReboot);
+        if (uninstallWatch.ElapsedMilliseconds > 300000)
+        {
+            log.Warn("Uninstall time budget exhausted; the driver packages are left for the next run after the reboot.");
+            removedPackages = 0;
+            packageReboot = true;
+        }
+        else
+        {
+            NlDrivers.DeleteInstalled(log, devicesGone, 45000, out removedPackages, out packageReboot);
+        }
         result.RemovedPackages = removedPackages;
         reboot |= packageReboot;
+
+        // Remove a post-reboot repair task left by a pre-0.6 setup (it is never
+        // created by this build any more).
+        log.Step("Removing a legacy automatic-repair task, if present");
+        try
+        {
+            var task = Sys.Run("schtasks.exe", "/Delete /TN \"NLMatrixPostReboot\" /F", 30000);
+            if (task.Started && task.ExitCode == 0) log.Info("Removed the legacy NLMatrixPostReboot task.");
+        }
+        catch (Exception ex) { log.Warn("Could not query the legacy task: " + ex.Message); }
 
         log.Step("Removing the NLMatrix test certificate");
         result.CertFile = System.IO.Path.Combine(appDir, "driver", NlConst.CerName);
@@ -1969,6 +2090,9 @@ internal static class NlUninstall
                  " appDirScheduled=" + result.AppFilesScheduled + " reboot=" + result.RebootRecommended);
         log.Info("Windows audio defaults and other vendors' audio devices were not modified.");
         log.Info("User presets/config in %APPDATA%\\" + NlConst.AppName + " were kept.");
+        log.Info("Removal completed in " +
+                 uninstallWatch.Elapsed.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture) +
+                 " s (hard budget 300 s; a busy device is finished by the reboot).");
         return result;
     }
 
@@ -2102,5 +2226,32 @@ internal static class NlUninstall
             result.AppFilesRemoved = true;
         }
         NlPaths.CleanupStaleSiblings(appDir, log);
+    }
+}
+
+// Modal dialogs are only safe in an interactive session.  When the setup runs from
+// automation (VMware guest run, service, session 0) a MessageBox would wait forever
+// for a click nobody can make: the callers use this helper instead.
+internal static class NlUi
+{
+    public static bool CanShowUi()
+    {
+        try
+        {
+            if (!Environment.UserInteractive) return false;
+            using (var process = Process.GetCurrentProcess())
+                return process.SessionId != 0;
+        }
+        catch { return false; }
+    }
+
+    public static void Show(string text, string caption, MessageBoxIcon icon)
+    {
+        if (!CanShowUi())
+        {
+            Console.Error.WriteLine(caption + ": " + (text ?? "").Replace("\r\n", " ").Replace('\n', ' '));
+            return;
+        }
+        MessageBox.Show(text, caption, MessageBoxButtons.OK, icon);
     }
 }

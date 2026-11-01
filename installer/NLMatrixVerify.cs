@@ -384,7 +384,7 @@ internal static class NlVerify
 
         if (!silent)
         {
-            MessageBox.Show(outcome.Text, NlConst.AppName + " — verifica installazione", MessageBoxButtons.OK,
+            NlUi.Show(outcome.Text, NlConst.AppName + " — verifica installazione",
                             outcome.Healthy ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
         }
         else

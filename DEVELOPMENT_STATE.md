@@ -621,4 +621,31 @@ Prossimo lavoro: funzionalita' Quick Connect in GUI, routing bidirezionale, mixe
   dell'uninstaller (console e wizard). Nessuno script tocca il firmware: non e' possibile via
   software e non servono script (nessun rischio antivirus).
 
+## Incremento 2026-11-01 — Installer/uninstaller sicuri: nessuna scrittura al BCD
+
+- **Audit e rimozione**: eliminate tutte le possibilita' di modifica del boot/sicurezza.
+  Rimossi `EnableTestSigning`, l'opzione CLI `/accept-testsigning`, la casella nel wizard e il
+  ramo che abilitava il test signing. Il setup ora legge soltanto (`bcdedit /enum`, stato live
+  Code Integrity) e, se il driver non puo' caricare in quel boot, si ferma con exit 12 **prima**
+  di toccare file, certificati, dispositivi o registro.
+- **Prova statica**: `tools/Test-NoBcdWrites.ps1` scansiona sorgenti e binari e richiede che ogni
+  invocazione di bcdedit sia `/enum`, che non esistano helper di abilitazione e che non ci siano
+  stringhe di scrittura nei binari. Esito: PASS.
+- **Uninstaller**: rimozione con budget. Stop servizio (20 s), rimozione per instance ID PnP con
+  `pnputil /remove-device` (30 s per chiamata, budget 90 s; `devcon remove` non si usa piu' perche'
+  bloccava), pacchetti solo se il dispositivo e' sparito (45 s ciascuno), budget totale 300 s.
+  Dispositivo occupato: exit 20 con istruzione di riavvio, nessuna attesa lunga. Durata totale
+  registrata nel log.
+- **Identificazione**: solo hardware ID NL (`Root\NLMatrixVirtualAudio`, legacy
+  `Root\sysvad_ComponentizedAudioSample`), instance ID da SetupAPI, pacchetti con descrizione/HWID/
+  `nlmatrixaudio.sys`, certificato per thumbprint/CN, servizio NL. Nessuna pulizia generica della
+  classe MEDIA, nessun tocco ai driver di terzi; profili utente conservati.
+- **Test VM**: `tools/vm/Run-SetupSafetyCheck.ps1` (nuovo) copre install, repair, uninstall con
+  client che tiene aperto NL Mic 1, uninstall a driver gia' assente, riavvio e reinstall, con
+  confronto byte a byte di `bcdedit /enum {current}` prima e dopo e riepilogo JSON.
+  `tools/vm/Run-SetupLifecycleCheck.ps1` (esistente) completato per il ciclo di vita.
+- **Log host del guasto**: nei log disponibili il setup invoca solo `bcdedit /enum`; nessuna riga
+  "Enabling Windows test signing" e nessun riferimento a `flightsigning` nel codice. L'origine di
+  TESTSIGNING/FLIGHTSIGNING sul PC principale non e' dimostrabile dai log: resta ipotesi.
+
 

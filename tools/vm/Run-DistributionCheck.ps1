@@ -15,7 +15,7 @@
     file must come back), upgrade, reinstall (idempotent), then endpoints check,
     uninstall, and a final clean reinstall that leaves the VM usable.  The
     installer never changes tools' drivers; test signing is enabled in the VM
-    already and /accept-testsigning is passed explicitly.
+    already and is passed explicitly.
 
     Output is a compact JSON verdict: the coordinator reads only that summary.
 #>
@@ -174,7 +174,7 @@ if (-not $SkipInstaller) {
         # NL-Exec appends its own EXITCODE line after the command, so the real
         # setup exit code is captured (a nested %errorlevel% echo would be expanded
         # before the command runs and always report 0).
-        $cmd = "$guestInstaller --mode $mode /silent /accept-testsigning $extra"
+        $cmd = "$guestInstaller --mode $mode /silent $extra"
         $r = NL-Exec $cmd -TimeoutSec $timeout
         $codeMatches = [regex]::Matches($r, 'EXITCODE=(\d+)')
         $code = if ($codeMatches.Count -gt 0) { [int] $codeMatches[$codeMatches.Count - 1].Groups[1].Value } else { -999 }
@@ -215,7 +215,7 @@ if (-not $SkipInstaller) {
         return "mic=$mic return=$ret"
     }
     Assert-True ((& $runMode 'diagnose') -eq 0) 'diagnose'
-    $diag = NL-Exec "$guestInstaller --mode diagnose /silent /accept-testsigning" -TimeoutSec 300
+    $diag = NL-Exec "$guestInstaller --mode diagnose /silent" -TimeoutSec 300
     Assert-True ($diag -match 'Setup decision') 'diagnose prints a setup decision'
     try { NL-CopyFrom "$guestTemp\NLMatrixSetup-diagnose.log" (Join-Path $OutputDir 'setup-diagnose.log') | Out-Null } catch { }
 
