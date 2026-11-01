@@ -453,3 +453,40 @@ Dettagli e limiti "non dimostrati": `reports/thirdparty/NL_THIRD_PARTY_AUDIO_ANA
 **Non ancora collaudato**: leg con endpoint a >2 canali nel formato condiviso (servono 4/6/8 canali
 impostati in Sound → Advanced sul PC principale o un endpoint nativo multicanale), click-through del
 wizard in modalita' standard, 10 canali Apollo su hardware (A9/A13/A14 invariati).
+
+## Aggiornamento 2026-11-01 06:50 — collaudo su VM "Windows standard" (TESTSIGNING off, senza driver NL)
+
+La VM di test e' stata portata allo stato di un PC normale: `bcdedit` -> `testsigning No`, riavvio,
+disinstallazione completa di NL Audio Matrix e del driver NL (nessun dispositivo `ROOT\MEDIA\*` NL,
+nessun endpoint NL). Tutti i test seguenti girano in questo stato, senza kernel driver.
+
+**Installer, selezione automatica della modalita' standard**
+- `--mode install /silent` (senza `/no-driver`) -> **exit 0**; log: "Installation mode: standard Windows
+  mode (application and engine only; no NL kernel driver)", motivo = test signing non attivo, nessuna
+  operazione devcon/pnputil/certificato/endpoint, nessun riavvio.
+- `--mode verify /silent` -> **exit 0**, "NL driver required: no", inventario read-only
+  capture=13 (10 active), render=17 (11 active), Result READY.
+
+**Percorso di invio VB-CABLE completo** (`tools/vm/Run-SendCableCheck.ps1`, build router 647e559c):
+**PASS 15/15** su VM senza modalita' test: engine -> WASAPI render CABLE Input -> driver VB-CABLE ->
+WASAPI capture CABLE Output -> registrazione di un client indipendente (ffmpeg).
+Misure: livello -15,09 dBFS RMS / -11,87 dBFS picco; tono 1000 Hz a -12,13 dBFS (L) e 1040 Hz a
+-12,28 dBFS (R), rapporto tono/rumore 270x e 475x; continuita' 0,02 ms; gain -12 dB applicato
+(delta 12,01 dB); mute a -76,55 dBFS con toni a -118 dBFS; unmute ripristina -15,11 dBFS; cavo
+rilasciato dopo lo stop (registrazione a -96,29 dBFS, tono assente) e riavvio del motore che ritrasmette.
+
+**Quick Connect dalla GUI, modalita' Windows endpoint** (`tools/vm/Run-QuickConnectUserModeCheck.ps1`):
+**PASS 6/6**. Il percorso di produzione `--quickconnecttest --qc-windows-endpoint` costruisce il
+progetto, avvia il motore e invia il tono a "CABLE Input"; preset scritto in una directory propria
+(isolato dai profili Studio); tono misurato sul cavo a -13,32 dBFS; nessun processo residuo.
+
+**Sessione Studio bidirezionale** (`tools/vm/Run-StudioSessionCheck.ps1`, monitor su uscita ASIO, senza
+driver NL): **PASS 11/11**. Sorgente locale + ritorno remoto (process loopback, livello -12 dB) ->
+bus "sendMix" (N-1: mixMinus sul ritorno) e bus "monMix" (mix completo).
+- finestra invio: toni locali -12,34/-12,28 dBFS, ritorno remoto respinto a -86,18/-83,87 dBFS;
+- bus: monMix 0,505 (locale 0,25 + remoto 0,25) contro sendMix 0,25 -> N-1 reale;
+- monitor: destinazione ASIO a -6 dB, continuita' 0,04 ms.
+Il bus mix-minus e' stato aggiunto al motore (`mixMinus` sui bus, oltre a quello per destinazione).
+
+Nota ambiente: FlexASIO usa un profilo exclusive per il clock del test di invio e uno shared per la
+sessione Studio, perche' un flusso render in exclusive non e' catturabile dal loopback/process loopback.

@@ -438,6 +438,10 @@ namespace
         bool solo = false;
         float gainDb = 0.0f;
         int channels = 2;
+        // N-1 / mix-minus at bus level: these sources are left out of this bus
+        // mix, so one bus can feed a "send" that excludes the remote return
+        // while another bus carries the full monitor mix.
+        std::vector<juce::String> mixMinusSources;
     };
 
     struct DestinationDef
@@ -644,6 +648,11 @@ namespace
                 const auto busChannels = prop (item, "channels");
                 if (! busChannels.isVoid())
                     b.channels = juce::jlimit (1, 32, (int) busChannels.toString().getIntValue());
+                if (auto* exclude = prop (item, "mixMinus").getArray())
+                {
+                    for (const auto& value : *exclude)
+                        b.mixMinusSources.push_back (value.toString());
+                }
                 config.buses.push_back (b);
             }
         }
@@ -1596,6 +1605,8 @@ namespace
         std::vector<bool> sourceSolo, busSolo, destinationSolo, destinationMonitor;
         // destination index -> source indices excluded for mix-minus
         std::vector<std::vector<bool>> destinationExcluded;
+        // bus index -> source indices excluded from that bus (N-1 send bus)
+        std::vector<std::vector<bool>> busExcluded;
         // When the graph has no enabled route there is nothing to process.
         // Keep the device clock and telemetry alive, but skip all source reads
         // and channel mixing until a route becomes active again.
@@ -1878,6 +1889,12 @@ namespace
                                          ? snapshot->busRoutes[(size_t) bi] : b->routes;
                 for (const auto& r : routes)
                 {
+                    // Bus-level N-1: the excluded sources never enter this mix.
+                    if ((size_t) bi < snapshot->busExcluded.size()
+                        && r.sourceIndex >= 0
+                        && r.sourceIndex < (int) snapshot->busExcluded[(size_t) bi].size()
+                        && snapshot->busExcluded[(size_t) bi][(size_t) r.sourceIndex])
+                        continue;
                     const auto* source = sourceChannels (r.sourceIndex);
                     if (source == nullptr)
                         continue;
@@ -2078,6 +2095,8 @@ namespace
         out.destinationRoutes.assign (destinationIndex.size(), {});
         out.destinationExcluded.assign (destinationIndex.size(),
                                         std::vector<bool> (sourceIndex.size(), false));
+        out.busExcluded.assign (busIndex.size(),
+                                std::vector<bool> (sourceIndex.size(), false));
         out.sourceSolo.assign (sourceIndex.size(), false);
         out.busSolo.assign (busIndex.size(), false);
         out.destinationSolo.assign (destinationIndex.size(), false);
@@ -2104,6 +2123,18 @@ namespace
                 const auto si = sourceIndex.find (excluded);
                 if (si != sourceIndex.end())
                     out.destinationExcluded[(size_t) di->second][(size_t) si->second] = true;
+            }
+        }
+        for (const auto& b : cfg.buses)
+        {
+            const auto bi = busIndex.find (b.id);
+            if (bi == busIndex.end())
+                continue;
+            for (const auto& excluded : b.mixMinusSources)
+            {
+                const auto si = sourceIndex.find (excluded);
+                if (si != sourceIndex.end())
+                    out.busExcluded[(size_t) bi->second][(size_t) si->second] = true;
             }
         }
         out.busOrder.clear();

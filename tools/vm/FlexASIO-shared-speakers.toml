@@ -1,0 +1,15 @@
+backend = "Windows WASAPI"
+bufferSizeSamples = 960
+
+# Shared-mode FlexASIO clock for the studio session test.
+# The studio harness needs a CAPTURABLE remote program: WASAPI loopback (and the
+# process loopback) cannot see an EXCLUSIVE-mode render stream, so this profile
+# keeps the guest speakers in shared mode. Exclusive mode (see
+# FlexASIO-exclusive-48000.toml) stays the clock profile for the send-path test.
+[input]
+device = ""
+
+[output]
+device = "Altoparlanti (High Definition Audio Device)"
+wasapiExclusiveMode = false
+suggestedLatencySeconds = 0.0
