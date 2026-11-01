@@ -89,6 +89,8 @@ Historical backlog: `docs/TASKS_HISTORY.md`. Engine architecture: `docs/ENGINE_V
 | D9 | Repository cleanup/consolidation (2026-10-27) | DONE | Docs consolidated (README/TASKS/DEVELOPMENT_STATE/TEST_STATUS + technical docs); obsolete moved to `da_eliminare/2026-10-27-consolidation/`; app build objects removed (regenerable); `.gitignore` updated; script/CMake references verified. VM untouched. Delete `da_eliminare` contents only after review (space is not freed by the move). Second cleanup 2026-10-31: external `K:\AI\_usbip_eval|_delivery_tests|_delivery_tools`, VM session scratch, stale `app/build-gui` and regenerables archived in `da_eliminare/2026-10-31-cleanup/` (839 files / 606 MB); harness paths and tracked files untouched. |
 | D10 | Installer devcon presence detection (exit code vs output) | DONE (VM, 2026-10-29) | Root cause of `devcon update failed` fixed: devcon status exits 0 even with no match; presence now output-based via `DeviceExists`. Fresh-install branch verified (install EXITCODE=0, device present, service RUNNING), reuse branch OK; new installer hash `05195009...`; uninstall not re-tested |
 | D11 | Installer install/repair/upgrade/uninstall modes | DONE (VM, 2026-10-29) | `--mode install|repair|upgrade|uninstall /silent`, exit-code table 0/1/2/…/20, `%TEMP%\NLMatrixSetup-<mode>.log`, ARP ModifyPath→repair, presets kept on uninstall/repair. VM: upgrade 0, repair 0, uninstall 20+reboot then clean state, clean install 0, repeat 0 |
+| D12 | Standard Windows install mode (no TESTSIGNING, no NL driver) | DONE (VM, 2026-11-01) | `/no-driver` (alias `/app-only`, also `/no-driver` into the wizard) and automatic selection when test signing is not active: install/repair/upgrade deploy app+engine+uninstaller only, with **no** devcon/pnputil, no certificate store write, no NL endpoint requirement and no reboot; verification = payload hashes + `NLMatrixRouter.exe --buildinfo` + read-only endpoint inventory. VM (driver present, TESTSIGNING=Yes): `--mode install /no-driver /silent` exit 0 in 5.6 s, `--mode verify /no-driver /silent` exit 0 in 4.6 s, log states the skipped driver/certificate/endpoint steps. Build `f01edc7f…` |
+| D13 | Uninstaller/reinstall: stuck SCM service and endpoint re-enumeration | DONE (VM, 2026-11-01) | Root cause measured: after a same-boot removal the NL service can stay registered, `KERNEL_DRIVER / StartType=DISABLED / RUNNING / NOT_STOPPABLE` and marked-for-deletion (`sc delete` 1072) with no device and no package, which survives reboots and blocks service recreation. Uninstaller now reports exit 20 + warning instead of a false exit 0 while the service is still registered; setup logs the PnP problem code, restarts AudioEndpointBuilder (bounded 20 s+20 s), does one NL-only device cycle (45 s) and exits 20 with "reboot, then run Setup again (Ripara)" instead of exit 9. Cleanly cycled VM: suite 14/14 PASS, reinstall 20 in 6.5 s then 8 endpoints, BCD byte-identical (report `reports/safety/2026-11-01-043115`) |
 ## Next active objectives (priority order)
 
 > A21 (accuratezza frequenza loopback di ritorno) e' APERTO ma sospeso su richiesta: indagine interrotta, nessun altro test/analisi sull'argomento. Riprendere solo con test deterministici.
@@ -113,6 +115,14 @@ Historical backlog: `docs/TASKS_HISTORY.md`. Engine architecture: `docs/ENGINE_V
 6. **GUI/release**: DPI 125/150 (C6), remaining English technical prose (C8),
    installer/signing/licensing (D4, D7, D8).
 7. **Backlog**: C1–C10 remaining, A8, process-loopback on physical Windows, non-ASIO consumer for Quick Connect (browser/voice app) in the VM.
+8. **Percorso "Windows normale" (priorita' utente, 2026-11-01)**: NL Matrix deve girare
+   su Windows 11 senza TESTSIGNING. Implementato: modalita' di installazione standard,
+   loopback/render WASAPI multicanale (fino a 32 canali, mappa canali selezionabile),
+   `--endpoint-info` e `--leg-test`. Da collaudare sul PC principale: `--leg-test` su
+   "CABLE In 16ch" con il formato condiviso dell'endpoint portato a 8 canali
+   (Sound → Advanced, azione manuale dell'utente), e click-through del wizard in modalita'
+   standard. I 10 canali Apollo restano via ASIO dentro NL Matrix (prova hardware gia'
+   richiesta da A9/A13/A14); nessun endpoint Windows a 10 canali senza driver NL.
 
 ## Known environment limits (do not re-diagnose blindly)
 
@@ -128,3 +138,12 @@ Historical backlog: `docs/TASKS_HISTORY.md`. Engine architecture: `docs/ENGINE_V
 - B7/B8: a software capture/METERS is a virtual tap, not an analog loopback;
   do not treat it as proof of the Focusrite outputs or of the Apollo driver.
   Physical loopback evidence is required before marking the hardware rows PASS.
+- Un driver NL rimosso nella stessa sessione puo' lasciare il servizio in SCM
+  `KERNEL_DRIVER / StartType=DISABLED / RUNNING / NOT_STOPPABLE` e marcato per la
+  cancellazione: sopravvive ai riavvii e impedisce di ricreare il servizio. In quello
+  stato il setup esce 20 (bounded) e la VM va riportata a uno snapshot pulito; non e'
+  un difetto del setup e non va re-diagnosticato come tale.
+- VB-CABLE in modalita' condivisa espone 2 canali di default (il pin arriva a 16, i
+  formati enumerati sono 2/4/6/8, solo PCM intero): per un leg a piu' di 2 canali serve
+  alzare il formato dell'endpoint in Sound → Advanced o usare un endpoint nativo
+  multicanale. 10 canali non sono un conteggio legale su VB-CABLE.

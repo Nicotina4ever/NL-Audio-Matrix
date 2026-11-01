@@ -659,4 +659,42 @@ Prossimo lavoro: funzionalita' Quick Connect in GUI, routing bidirezionale, mixe
   quello stato (exit 2); serve il ciclo pulito. Il setup ora rileva `deviceHealthy=False` e prova
   il re-binding prima di dichiarare sano un device solo perche' il servizio esiste.
 
+## Aggiornamento 2026-11-01 — percorso Windows normale e terze parti
+
+**Decisione**: niente certificazione a pagamento, niente TESTSIGNING sul PC principale. NL Matrix
+gira come motore/GUI user-mode; gli endpoint Windows per le altre applicazioni vengono da
+dispositivi gia' firmati (VB-CABLE, hardware reale) oppure dal driver NL solo su macchine di test.
+CKMS (Custom Kernel Signers / App Control) resta un'alternativa futura **non** implementata.
+
+**Analisi terze parti** (`reports/thirdparty/NL_THIRD_PARTY_AUDIO_ANALYSIS.md`, solo statica):
+- VB-CABLE 4.5: catalogo firmato *Microsoft Windows Hardware Compatibility Publisher* → carica su
+  Windows 11 standard. Un solo cavo con pin render e capture fino a 16 canali, formati enumerati
+  2/4/6/8 canali, solo PCM intero, default condiviso 48k/24-bit **stereo**. Adatto come leg
+  opzionale (mic verso le app, cattura loopback delle app verso il motore).
+- VB-Matrix 1.0.2.6: VAIO (`VBMatrix In/Out n`) + quattro driver ASIO virtuali (8/64A/64B/128 ch) e
+  la sua app di routing. Licenza non estraibile staticamente; richiede la sua app per essere utile,
+  quindi resta un backend opzionale generico, non una dipendenza.
+- VirtualDrivers 25.7.14: **scartato**. Firma solo SignPath (nessun catalogo Microsoft) → Code 52 su
+  Windows standard; nessuna interfaccia utente per iniettare PCM nel microfono virtuale (che e' un
+  device finto indipendente). Nessun vantaggio dimostrabile.
+
+**Applicazione**: il loopback WASAPI nativo ora consegna **tutti** i canali del formato condiviso
+(1..32) invece dei soli L/R; una sorgente `loopback` mappa i canali catturati scelti
+(`channels`) nei canali del grafo, quindi un solo endpoint con molti canali alimenta piu' canali
+della matrice. La GUI mostra il numero di canali dell'endpoint nel browser dispositivi e usa quel
+numero come default dei canali del nuovo leg (2 per ASIO e coppie NL). Nuovi strumenti:
+`--endpoint-info` (inventario endpoint con canali/rate/bit reali) e `--leg-test` (sintesi di un tono
+distinto per canale su un endpoint render e cattura dallo stesso endpoint via loopback: PASS = i
+canali arrivano indipendenti e con l'identita' giusta), con harness `tools/vm/Run-EndpointLegCheck.ps1`.
+
+**Installer/uninstaller**: modalita' standard (`/no-driver`) senza driver, certificati o endpoint NL
+e senza riavvio; recupero bounded dell'enumerazione endpoint; causa radice della reinstallazione
+fallita individuata nel servizio NL lasciato `DISABLED/NOT_STOPPABLE` e marcato per la cancellazione
+(ora l'uninstaller esce 20 invece di un falso 0). Suite di sicurezza 14/14 su VM ciclata pulita,
+BCD byte-identico.
+
+**Da collaudare (non ancora verificato)**: leg multicanale reale su endpoint con formato condiviso
+>2 canali (PC principale, azione manuale dell'utente), click-through del wizard in modalita'
+standard, e i 10 canali Apollo in prova hardware (A9/A13/A14, invariati).
+
 

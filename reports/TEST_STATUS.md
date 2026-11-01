@@ -415,3 +415,41 @@ Eseguiti con `tools/Run-TestSuite.ps1` (risultati sintetici, nessun polling LLM)
 - Log completi: `reports/automation/<run>/logs/`; riepilogo unico `reports/automation/latest-summary.json`.
 - GUI: nuova organizzazione modulare (patchbay centrale, sezioni on-demand, barra di stato);
   Quick Connect disponibile dalla GUI. A21/A22 aperti/sospesi, non bloccanti.
+
+## Aggiornamento 2026-11-01 — Windows standard, endpoint firmati, leg multicanale
+
+**Installazione standard (VM, build `f01edc7f…`, 4.094.464 byte)**
+- `--mode install /no-driver /silent` -> **exit 0 in 5,6 s**; log: "Installation mode: standard Windows mode",
+  "no devcon/pnputil driver operation, no certificate store operation and no NL endpoint requirement",
+  `EnsureDriver`/`RemoveDuplicates` saltati, `NLMatrixRouter.exe --buildinfo -> exit 0`, inventario endpoint
+  read-only. `--mode verify /no-driver /silent` -> **exit 0 in 4,6 s**.
+- Modalita' driver invariata: install pulita **exit 0 in 10,6 s con 8/8 endpoint**, verify exit 0 in 2,6 s.
+- `tools/Test-NoBcdWrites.ps1` **PASS 6/6**; `bcdedit /enum {current}` byte-identico (718 byte) prima/dopo.
+- Suite sicurezza: **14/14 PASS** su VM ciclata pulita (`reports/safety/2026-11-01-043115`), reinstall 20 in
+  6,5 s -> 8 endpoint. Percorso di recupero esercitato e bounded (85,3 s, exit 20 con messaggio di riavvio,
+  mai 9 e mai bloccato).
+- Causa radice dei FAIL su VM "sporca": servizio NL rimasto `KERNEL_DRIVER / StartType=DISABLED / RUNNING /
+  NOT_STOPPABLE`, marcato per la cancellazione (`sc delete` 1072). Inoltre `shutdown /r` via vmrun
+  runProgramInGuest **non riavvia** il guest (LastBootUpTime invariato): i test "post-riavvio" misuravano
+  in realta' lo stesso boot. `vmrun reset` funziona. Da correggere nella suite prima di fidarsi dei
+  controlli che dipendono dal riavvio.
+
+**Audio: endpoint firmati e leg multicanale (VM)**
+- `NLMatrixRouter --endpoint-info`: inventario reale con canali/rate/bit per endpoint (host: 21 endpoint,
+  VB-CABLE 2 ch, VB-Matrix VAIO 8 coppie 2 ch; VM: 15 render + 14 capture).
+- `tools/vm/Run-EndpointLegCheck.ps1 --Endpoint "CABLE In 16ch"`: **PASS 2/2 canali**, 400/440 Hz distinti,
+  livello -15,2 dBFS, tono 0,2423 contro rumore 0,0001 (exit 0), endpoint 2 ch in modalita' condivisa
+  (VB-CABLE con formato predefinito stereo).
+- Motore con leg reale (`tone -> CABLE In 16ch -> loopback nativo -> matrice`): `engineHealthy=true`,
+  `asioError=false`, sorgente loopback `cable` online con 2 canali a -18,0 dBFS (tono -6 dB), destinazione
+  `cableIn` online, `writerStarved=0`, `underruns=0`, ring stabile 1920-3360 frame su target 2880.
+- Offline invariati: `--matrix-test` PASS (max_error 0), `--resampler-test` PASS 3/3.
+
+**Terze parti (statico)**: VB-CABLE 4.5 e' l'unico dei tre che carica su Windows 11 standard (catalogo
+Microsoft WHQL); VirtualDrivers 25.7.14 **scartato** (firma solo SignPath -> Code 52, nessun modo di
+iniettare PCM nel microfono); VB-Matrix 1.0.2.6 richiede la sua app e ha ASIO 8/64/128 canali.
+Dettagli e limiti "non dimostrati": `reports/thirdparty/NL_THIRD_PARTY_AUDIO_ANALYSIS.md`.
+
+**Non ancora collaudato**: leg con endpoint a >2 canali nel formato condiviso (servono 4/6/8 canali
+impostati in Sound → Advanced sul PC principale o un endpoint nativo multicanale), click-through del
+wizard in modalita' standard, 10 canali Apollo su hardware (A9/A13/A14 invariati).

@@ -969,8 +969,14 @@ internal sealed class SetupWizard : Form
                           ? T("sì (", "yes (") + NlText.DisplayVersion(scan.Runtime.LoadedFileVersion) + ")"
                           : T("no", "no")));
         sb.AppendLine(T("Endpoint audio      : ", "Audio endpoints     : ") + (scan.Endpoints != null
-            ? scan.Endpoints.ActiveCount + T(" attivi su 8 attesi (4 NL Mic + 4 NL Return)",
-                                             " active out of 8 expected (4 NL Mic + 4 NL Return)")
+            ? scan.Endpoints.ActiveCount + T(" attivi",
+                                             " active") +
+              (options.NoDriver || scan.Security == null ||
+               !string.Equals(scan.Security.TestSigning, "enabled", StringComparison.OrdinalIgnoreCase)
+                  ? T(" (informativo: la modalità standard non richiede endpoint NL)",
+                      " (informational: standard mode does not require NL endpoints)")
+                  : T(" su 8 attesi (4 NL Mic + 4 NL Return)",
+                      " out of 8 expected (4 NL Mic + 4 NL Return)"))
             : T("sconosciuti", "unknown")));
         sb.AppendLine(T("Firma di test       : ", "Test signing        : ") +
                       (scan.Security != null ? scan.Security.TestSigning : T("sconosciuta", "unknown")) +
@@ -1004,6 +1010,20 @@ internal sealed class SetupWizard : Form
             return;
         }
         var sb = new StringBuilder();
+        // Standard Windows mode never needs the test-signed driver, so the state of
+        // test signing / Secure Boot / HVCI is informational for that mode.
+        if (options.NoDriver)
+        {
+            sb.AppendLine(T("Modalità standard richiesta (/no-driver): vengono installati solo programma, motore, disinstallatore e collegamenti. Nessun driver, certificato, servizio o riavvio.",
+                            "Standard Windows mode requested (/no-driver): only the program, engine, uninstaller and shortcuts are installed. No driver, certificate, service or reboot."));
+            sb.AppendLine();
+        }
+        else if (!string.Equals(security.TestSigning, "enabled", StringComparison.OrdinalIgnoreCase))
+        {
+            sb.AppendLine(T("Modalità standard automatica: la firma di test non è attiva in questo avvio, quindi Setup installa solo il programma e il motore (nessun driver, certificato o riavvio).",
+                            "Automatic standard Windows mode: test signing is not active in this boot, so Setup installs only the program and engine (no driver, certificate or reboot)."));
+            sb.AppendLine();
+        }
         sb.AppendLine("Secure Boot: " + security.SecureBoot + "    TESTSIGNING: " + security.TestSigning);
         sb.AppendLine(T("HVCI (Integrità memoria): ", "HVCI (Memory integrity): ") +
                       security.Hvci + "    " + T("Firmware: ", "Firmware: ") + security.Firmware);
@@ -1023,10 +1043,19 @@ internal sealed class SetupWizard : Form
         }
         else if (security.Verdict == "blocked")
         {
-            sb.AppendLine(T("Questa configurazione di Windows blocca il driver firmato per test.",
-                            "This Windows configuration blocks the test-signed driver."));
-            foreach (var line in security.Guidance) sb.AppendLine("• " + line);
-            lblSecurityHeadline.ForeColor = BadColor;
+            if (options.NoDriver || !string.Equals(security.TestSigning, "enabled", StringComparison.OrdinalIgnoreCase))
+            {
+                sb.AppendLine(T("Questa configurazione di Windows non consente il driver firmato per test, ma la modalità standard non ne ha bisogno: viene installato solo il programma.",
+                                "This Windows configuration does not allow the test-signed driver, but standard mode does not need it: only the program is installed."));
+                lblSecurityHeadline.ForeColor = WarnColor;
+            }
+            else
+            {
+                sb.AppendLine(T("Questa configurazione di Windows blocca il driver firmato per test.",
+                                "This Windows configuration blocks the test-signed driver."));
+                foreach (var line in security.Guidance) sb.AppendLine("• " + line);
+                lblSecurityHeadline.ForeColor = BadColor;
+            }
         }
         else
         {
@@ -1135,12 +1164,16 @@ internal sealed class SetupWizard : Form
                                 "NL Audio Matrix Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
-            // A boot that has test signing configured but not yet applied is not a
-            // dead end: setup installs the application now and finishes the driver
-            // after the restart, so it must not block the wizard.
+            // The installer now selects standard Windows mode automatically when the
+            // test-signed driver cannot load in this boot (or when /no-driver is
+            // given), so a missing/blocks-test-signing configuration is no longer a
+            // dead end: the application is installed without any driver.  Only a boot
+            // that would really use driver mode keeps the security guidance dialog.
+            bool standardMode = options.NoDriver || scan == null || scan.Security == null ||
+                                !string.Equals(scan.Security.TestSigning, "enabled", StringComparison.OrdinalIgnoreCase);
             bool testSigningNeedsReboot = scan != null && scan.Security != null &&
                                           scan.Security.TestSigning == "reboot-required";
-            if (!testSigningNeedsReboot && scan != null && scan.Security != null && scan.Security.Verdict == "blocked")
+            if (!standardMode && !testSigningNeedsReboot && scan.Security.Verdict == "blocked")
             {
                 MessageBox.Show(this,
                     T("La configurazione di sicurezza di Windows blocca il driver firmato per test:\r\n\r\n",
@@ -1151,7 +1184,7 @@ internal sealed class SetupWizard : Form
                     "NL Audio Matrix Setup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
-            if (scan != null && scan.Security != null &&
+            if (!standardMode && scan.Security != null &&
                 scan.Security.TestSigning == "disabled")
             {
                 MessageBox.Show(this,

@@ -7157,14 +7157,72 @@ namespace
         void openDeviceBrowser()
         {
             std::vector<DeviceBrowserItem> items;
+
+            // Endpoint capability probe.  The shared-mode channel count is what
+            // the engine will really open, so it is shown before adding the leg
+            // and used as the default channel count.  A few endpoints carrying
+            // many channels is exactly the shape the product wants: all the
+            // routing complexity stays inside NL Audio Matrix.
+            struct WasapiCaps
+            {
+                juce::String name;
+                bool capture = false;
+                int channels = 0;
+                double rate = 0.0;
+            };
+            std::vector<WasapiCaps> caps;
+            if (auto wt = std::unique_ptr<juce::AudioIODeviceType> (
+                    juce::AudioIODeviceType::createAudioIODeviceType_WASAPI (
+                        juce::WASAPIDeviceMode::shared)))
+            {
+                wt->scanForDevices();
+                for (const auto& name : wt->getDeviceNames (false))
+                {
+                    WasapiCaps cap;
+                    cap.name = name;
+                    std::unique_ptr<juce::AudioIODevice> device (wt->createDevice (name, {}));
+                    if (device != nullptr)
+                    {
+                        cap.channels = device->getOutputChannelNames().size();
+                        const auto rates = device->getAvailableSampleRates();
+                        if (! rates.isEmpty())
+                            cap.rate = rates[0];
+                    }
+                    caps.push_back (cap);
+                }
+                for (const auto& name : wt->getDeviceNames (true))
+                {
+                    WasapiCaps cap;
+                    cap.name = name;
+                    cap.capture = true;
+                    std::unique_ptr<juce::AudioIODevice> device (wt->createDevice ({}, name));
+                    if (device != nullptr)
+                    {
+                        cap.channels = device->getInputChannelNames().size();
+                        const auto rates = device->getAvailableSampleRates();
+                        if (! rates.isEmpty())
+                            cap.rate = rates[0];
+                    }
+                    caps.push_back (cap);
+                }
+            }
+
             for (const auto& driver : asioDrivers)
                 items.push_back ({ "ASIO", driver, L10n::tr ("driver ASIO", "ASIO driver"), "asio:" + driver,
                                    "asio-in", "asio-out", {}, 0 });
-            for (const auto& endpoint : wasapiEndpoints)
+            for (const auto& cap : caps)
             {
-                items.push_back ({ "WASAPI", endpoint,
-                                   L10n::tr ("endpoint Windows / loopback", "Windows endpoint / loopback"),
-                                   {}, "loopback", "render", endpoint, 0 });
+                juce::String detail = juce::String (cap.channels) + " ch";
+                if (cap.rate > 0.0)
+                    detail << " · " << juce::String (cap.rate / 1000.0, 1) << " kHz";
+                detail << (cap.capture ? L10n::tr (" · cattura", " · capture")
+                                       : L10n::tr (" · riproduzione", " · render"));
+                // A capture-only endpoint can feed the matrix (source) but
+                // cannot be a destination, and vice versa for render-only ones.
+                juce::String sourceType = cap.capture ? "capture" : "loopback";
+                juce::String destinationType = cap.capture ? juce::String() : "render";
+                items.push_back ({ "WASAPI", cap.name, detail, {}, sourceType, destinationType,
+                                   cap.name, 0, cap.channels, cap.rate });
             }
             for (int pair = 1; pair <= NLMATRIX_MAX_ENDPOINTS; ++pair)
             {
@@ -7182,8 +7240,18 @@ namespace
             browser->onChoose = [safe, browser] (const DeviceBrowserItem& item, bool asSource)
             {
                 if (safe == nullptr) return;
+                // Default channel count: every channel the endpoint exposes (up
+                // to 16) for a Windows endpoint, stereo for ASIO and NL pairs.
+                const int defaultChannels = item.channelCount > 0
+                                                ? juce::jmin (item.channelCount, 16) : 2;
                 if (asSource)
                 {
+                    if (item.sourceType.isEmpty())
+                    {
+                        safe->setStatus (L10n::tr ("Endpoint solo di riproduzione: non può essere una sorgente.",
+                                                   "Render-only endpoint: it cannot be a source."));
+                        return;
+                    }
                     Source s;
                     s.id = safe->uniqueId ("src", safe->sources, safe->destinations, safe->buses);
                     s.name = item.name;
@@ -7191,7 +7259,8 @@ namespace
                     s.deviceId = item.deviceId;
                     s.endpoint = item.endpoint;
                     s.driverEndpoint = item.driverEndpoint;
-                    s.channels = { 0, 1 };
+                    s.channels.clear();
+                    for (int ch = 0; ch < defaultChannels; ++ch) s.channels.push_back (ch);
                     s.x = 40.0f;
                     s.y = 40.0f + 82.0f * (float) safe->sources.size();
                     safe->sources.push_back (s);
@@ -7200,6 +7269,12 @@ namespace
                 }
                 else
                 {
+                    if (item.destinationType.isEmpty())
+                    {
+                        safe->setStatus (L10n::tr ("Endpoint solo di cattura: non può essere una destinazione.",
+                                                   "Capture-only endpoint: it cannot be a destination."));
+                        return;
+                    }
                     Destination d;
                     d.id = safe->uniqueId ("dst", safe->sources, safe->destinations, safe->buses);
                     d.name = item.name;
@@ -7207,7 +7282,8 @@ namespace
                     d.deviceId = item.deviceId;
                     d.endpoint = item.endpoint;
                     d.driverEndpoint = item.driverEndpoint;
-                    d.channels = { 0, 1 };
+                    d.channels.clear();
+                    for (int ch = 0; ch < defaultChannels; ++ch) d.channels.push_back (ch);
                     d.x = 680.0f;
                     d.y = 40.0f + 82.0f * (float) safe->destinations.size();
                     safe->destinations.push_back (d);

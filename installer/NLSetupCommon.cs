@@ -1179,6 +1179,23 @@ internal static class NlDevices
         return result.Started && result.ExitCode == 0;
     }
 
+    // True when the service object still exists.  A service that was deleted while
+    // its driver was still loaded is only *marked for deletion*: it keeps answering
+    // sc query until the reboot and its registry key remains.  Setup must treat that
+    // as "reboot required", otherwise a same-boot reinstall tries to recreate an
+    // existing service name and installs a device node without a working driver.
+    public static bool ServiceRegistered(SetupLog log)
+    {
+        try
+        {
+            using (var baseKey = NlReg.OpenBase())
+            using (var key = baseKey.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\" + NlConst.ServiceName))
+                if (key != null) return true;
+        }
+        catch { }
+        return ServiceExists(log);
+    }
+
     public static bool ServiceRunning(SetupLog log)
     {
         var result = Sys.Run("sc.exe", "query " + NlConst.ServiceName, 30000);
@@ -1203,6 +1220,35 @@ internal static class NlDevices
             Thread.Sleep(750);
         }
         return ServiceRunning(log);
+    }
+
+    // Restarts the Windows audio endpoint services with bounded deadlines.  Setup
+    // never changes Windows audio defaults: AudioEndpointBuilder is the service that
+    // turns a started audio device interface into the MMDevices endpoints, and after
+    // a same-boot uninstall/install cycle it can miss the device and leave zero
+    // endpoints until the service is restarted (or Windows reboots).
+    public static bool RestartAudioEndpointBuilder(SetupLog log, int timeoutMs)
+    {
+        log.Step("Restarting the Windows audio endpoint services (bounded at " +
+                 (timeoutMs / 1000) + " s per command)");
+        var stop = Sys.Run("net.exe", "stop AudioEndpointBuilder /y", timeoutMs);
+        log.Command(stop);
+        // AudioEndpointBuilder first: Windows Audio (Audiosrv) depends on it.
+        var startBuilder = Sys.Run("sc.exe", "start AudioEndpointBuilder", timeoutMs);
+        log.Command(startBuilder);
+        var startAudio = Sys.Run("sc.exe", "start Audiosrv", timeoutMs);
+        log.Command(startAudio);
+        bool running = IsServiceRunning(log, "AudioEndpointBuilder");
+        log.Info("Audio endpoint services: AudioEndpointBuilder=" + (running ? "running" : "not running") +
+                 ", Audiosrv=" + (IsServiceRunning(log, "Audiosrv") ? "running" : "not running") + ".");
+        return running;
+    }
+
+    public static bool IsServiceRunning(SetupLog log, string name)
+    {
+        var result = Sys.Run("sc.exe", "query " + name, 30000);
+        if (!result.Started || result.ExitCode != 0) return false;
+        return Regex.IsMatch(result.OutputOrEmpty, "\\bRUNNING\\b");
     }
 
     public static void DeleteService(SetupLog log)
@@ -1452,8 +1498,81 @@ internal sealed class EndpointReport
     }
 }
 
+// Read-only inventory of every audio endpoint Windows currently exposes.  Standard
+// Windows mode installs no NL kernel driver, so it must not require the eight NL
+// endpoints: this inventory is informational only and names endpoints generically,
+// exactly as Windows reports them (no product names are assumed or written).
+internal sealed class EndpointInventory
+{
+    public int CaptureCount;
+    public int RenderCount;
+    public int ActiveCapture;
+    public int ActiveRender;
+    public readonly List<string> CaptureNames = new List<string>();
+    public readonly List<string> RenderNames = new List<string>();
+
+    public int TotalCount { get { return CaptureCount + RenderCount; } }
+
+    public string Summary
+    {
+        get
+        {
+            return "capture=" + CaptureCount + " (" + ActiveCapture + " active), render=" +
+                   RenderCount + " (" + ActiveRender + " active)";
+        }
+    }
+}
+
 internal static class NlEndpoints
 {
+    // Enumerates the audio endpoints Windows currently exposes, whatever their
+    // vendor.  Used only to log a read-only inventory in standard mode.
+    public static EndpointInventory Inventory(SetupLog log)
+    {
+        var inventory = new EndpointInventory();
+        foreach (var direction in new[] { "Render", "Capture" })
+        {
+            bool capture = string.Equals(direction, "Capture", StringComparison.OrdinalIgnoreCase);
+            try
+            {
+                using (var baseKey = NlReg.OpenBase())
+                using (var root = baseKey.OpenSubKey(
+                           @"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\" + direction))
+                {
+                    if (root == null) continue;
+                    foreach (var name in root.GetSubKeyNames())
+                    {
+                        using (var endpoint = root.OpenSubKey(name))
+                        {
+                            if (endpoint == null) continue;
+                            string friendlyName = ReadFriendlyName(endpoint);
+                            if (string.IsNullOrEmpty(friendlyName)) continue;
+                            bool active = (ReadDeviceState(endpoint) & 1) == 1;
+                            string label = friendlyName + (active ? " (active)" : " (inactive)");
+                            if (capture)
+                            {
+                                inventory.CaptureCount++;
+                                if (active) inventory.ActiveCapture++;
+                                inventory.CaptureNames.Add(label);
+                            }
+                            else
+                            {
+                                inventory.RenderCount++;
+                                if (active) inventory.ActiveRender++;
+                                inventory.RenderNames.Add(label);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                log.Warn("Could not inventory " + direction + " audio endpoints: " + ex.Message);
+            }
+        }
+        return inventory;
+    }
+
     private static string ReadFriendlyName(RegistryKey endpointKey)
     {
         try
@@ -1954,7 +2073,7 @@ internal static class NlUninstall
         bool appDirExists = Directory.Exists(appDir);
         bool ourAppDir = appDirExists && !NlPaths.IsEmptyDirectory(appDir) && NlPaths.LooksLikeOurDirectory(appDir);
         bool certificate = NlCert.IsAnyTrusted(log);
-        bool service = NlDevices.ServiceExists(log);
+        bool service = NlDevices.ServiceRegistered(log);
 
         log.Info("Current state: arp=" + arpEntry + " startMenu=" + startMenu + " appDir=" + appDirExists +
                  " devices(root=" + rootDevice + ", legacy=" + legacyDevice + ")" +
@@ -2025,6 +2144,18 @@ internal static class NlUninstall
 
         log.Step("Removing the NLMatrix driver service");
         NlDevices.DeleteService(log);
+        // A driver service that was still loaded is only marked for deletion and
+        // survives until the reboot.  Reporting success without the reboot used to
+        // make a same-boot reinstall fail and leave a stopped device with zero
+        // endpoints, so the leftover service is a reboot-required condition now.
+        if (NlDevices.ServiceRegistered(log))
+        {
+            log.Warn("The NLMatrix driver service (" + NlConst.ServiceName + ") is still registered or marked for " +
+                     "deletion; it is removed at the next reboot.");
+            result.Warnings.Add("The NLMatrix driver service is still registered/marked for deletion; a reboot is " +
+                                "required to finish removing it.");
+            reboot = true;
+        }
 
         log.Step("Removing NLMatrix driver packages from the DriverStore (max 45 s each)");
         int removedPackages;
@@ -2073,6 +2204,7 @@ internal static class NlUninstall
             result.Warnings.Add("At least one NLMatrix device instance is still present; a reboot is required to finish removal.");
             reboot = true;
         }
+        if (NlDevices.ServiceRegistered(log)) reboot = true;
         result.RebootRecommended = reboot;
         exitCode = reboot ? 20 : 0;
 

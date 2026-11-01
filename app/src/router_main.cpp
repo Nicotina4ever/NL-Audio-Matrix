@@ -1077,6 +1077,11 @@ namespace
         std::unique_ptr<CaptureCallback> captureCallback;
         int busIndex = -1;
         int channels = 2;
+        // Multi-channel loopback: ring channel -> captured endpoint channel.
+        // Resolved once at setup (or reconnect) so the sink never allocates.
+        std::vector<int> captureMap;
+        std::vector<const float*> capturePointers;
+        std::vector<float> silentFrames;
         std::vector<int> asioCompact;
         std::vector<std::vector<float>> buf;
         // Pre-allocated pointer views: the audio callback must never allocate.
@@ -1098,6 +1103,86 @@ namespace
         std::array<std::atomic<float>, 32> channelPeak {};
         std::atomic<bool> clipped { false };
     };
+
+    // Multi-channel loopback sink: delivers the channels of a render endpoint's
+    // shared-mode mix to the source ring.  captureMap selects which captured
+    // channels become ring channels, which is what lets a few Windows endpoints
+    // (for example one 16-channel virtual cable) feed many matrix channels.
+    // Both the mapping and the pointer views are resolved once at setup, so the
+    // sink never allocates.
+    static WasapiLoopbackCapture::MultiSink makeLoopbackSink (SourceRuntime* source)
+    {
+        return [source] (const float* const* channels, int numChannels, int numFrames)
+        {
+            if (source->ring == nullptr || numFrames <= 0)
+                return;
+            auto& ring = *source->ring;
+            const int ringChannels = juce::jmin (ring.getChannels(),
+                                                 (int) source->capturePointers.size());
+            const int n = juce::jmin (numFrames, (int) source->silentFrames.size());
+            if (ringChannels <= 0 || n <= 0)
+                return;
+
+            for (int ch = 0; ch < ringChannels; ++ch)
+            {
+                const int wanted = source->captureMap[(size_t) ch];
+                source->capturePointers[(size_t) ch] =
+                    wanted >= 0 && wanted < numChannels && channels[wanted] != nullptr
+                        ? channels[wanted] : source->silentFrames.data();
+            }
+            ring.write (source->capturePointers.data(), ringChannels, n);
+
+            float peak = 0.0f;
+            for (int ch = 0; ch < ringChannels; ++ch)
+            {
+                const float* data = source->capturePointers[(size_t) ch];
+                for (int i = 0; i < n; ++i)
+                    peak = juce::jmax (peak, std::abs (data[i]));
+            }
+            if (peak > source->peak.load())
+                source->peak.store (peak);
+        };
+    }
+
+    // Multi-channel counterpart of drainRingTo() for loopback reconnects.
+    static void drainRingChannels (nlmatrix::MatrixRing& ring, int keepFrames,
+                                   std::vector<std::vector<float>>& scratch,
+                                   std::vector<float*>& pointers)
+    {
+        int toDrop = ring.available() - juce::jmax (0, keepFrames);
+        const int channels = juce::jmin (ring.getChannels(), (int) scratch.size());
+        if (channels <= 0 || scratch[0].empty())
+            return;
+        while (toDrop > 0)
+        {
+            const int chunk = juce::jmin (toDrop, (int) scratch[0].size());
+            for (int ch = 0; ch < channels; ++ch)
+                pointers[(size_t) ch] = scratch[(size_t) ch].data();
+            const int got = ring.read (pointers.data(), channels, chunk);
+            if (got <= 0)
+                break;
+            toDrop -= got;
+        }
+    }
+
+    // Minimal JSON string escaping for the machine-readable reports.
+    static juce::String jsonEscape (const juce::String& text)
+    {
+        juce::String result;
+        for (auto character : text)
+        {
+            switch (character)
+            {
+                case '"':  result << "\\\""; break;
+                case '\\': result << "\\\\"; break;
+                case '\n': result << "\\n"; break;
+                case '\r': result << "\\r"; break;
+                case '\t': result << "\\t"; break;
+                default:   result << character; break;
+            }
+        }
+        return result;
+    }
 
     struct ResolvedRoute
     {
@@ -2502,21 +2587,47 @@ namespace
             }
             else if (def.type == "loopback")
             {
+                // Multi-channel loopback: the render endpoint's shared-mode mix
+                // format decides how many channels arrive.  One 16-channel
+                // virtual cable therefore exposes many matrix channels through
+                // a single Windows endpoint, and def.channels selects which of
+                // the captured channels become matrix channels (default: all).
+                int capturedChannels = 0, capturedBits = 0;
+                double capturedRate = 0.0;
+                std::string probeError;
+                const bool probed = WasapiLoopbackCapture::probeRenderEndpoint (
+                    std::wstring (def.endpoint.toWideCharPointer()),
+                    capturedChannels, capturedRate, capturedBits, probeError);
+
+                rt->captureMap.clear();
+                if (! def.channels.empty())
+                {
+                    for (int ch : def.channels)
+                        rt->captureMap.push_back (juce::jlimit (0, 31, ch));
+                }
+                else
+                {
+                    const int count = juce::jlimit (1, 32, probed ? capturedChannels : 2);
+                    for (int ch = 0; ch < count; ++ch)
+                        rt->captureMap.push_back (ch);
+                }
+
+                rt->channels = juce::jmax (1, (int) rt->captureMap.size());
+                rt->ring = std::make_unique<nlmatrix::MatrixRing> (rt->channels, kRingFrames);
+                rt->capturePointers.assign ((size_t) rt->channels, nullptr);
+                rt->silentFrames.assign (65536, 0.0f);
+
+                std::cout << "Source " << def.id << " loopback map: " << rt->channels
+                          << " of " << (probed ? capturedChannels : 0) << " captured channel(s)";
+                if (probed)
+                    std::cout << " at " << capturedRate << " Hz (" << capturedBits << "-bit)";
+                std::cout << "\n";
+
                 rt->loopback = std::make_unique<WasapiLoopbackCapture>();
-                auto* ring = rt->ring.get();
-                auto* peak = &rt->peak;
+                auto sink = makeLoopbackSink (rt.get());
                 std::string loopError;
-                if (rt->loopback->start (std::wstring (def.endpoint.toWideCharPointer()),
-                                         [ring, peak] (const float* l, const float* r, int frames)
-                                         {
-                                             const float* frames2[2] = { l, r }; ring->write (frames2, 2, frames);
-                                             float p = 0.0f;
-                                             for (int i = 0; i < frames; ++i)
-                                                 p = juce::jmax (p, std::abs (l[i]));
-                                             if (p > peak->load())
-                                                 peak->store (p);
-                                         },
-                                         loopError))
+                if (rt->loopback->startMulti (
+                        std::wstring (def.endpoint.toWideCharPointer()), sink, loopError))
                 {
                     if (rt->loopback->getSampleRate() > 0.0)
                         rt->sampleRate.store (rt->loopback->getSampleRate(),
@@ -3457,19 +3568,13 @@ namespace
             source->processWatchStop.store (false, std::memory_order_relaxed);
             source->processWatch = std::thread ([source, rate = asioRate]
             {
-                const auto sink = [ring = source->ring.get(), peak = &source->peak]
-                    (const float* l, const float* r, int frames)
-                {
-                    const float* frames2[2] = { l, r }; ring->write (frames2, 2, frames);
-                    float p = 0.0f;
-                    for (int i = 0; i < frames; ++i)
-                        p = juce::jmax (p, std::abs (l[i]));
-                    if (p > peak->load())
-                        peak->store (p);
-                };
+                const auto sink = makeLoopbackSink (source);
 
                 int failures = 0;
-                std::vector<float> drainL (4096, 0.0f), drainR (4096, 0.0f);
+                std::vector<std::vector<float>> drainScratch (
+                    (size_t) juce::jmax (1, source->channels), std::vector<float> (4096, 0.0f));
+                std::vector<float*> drainPointers ((size_t) juce::jmax (1, source->channels),
+                                                   nullptr);
                 while (! source->processWatchStop.load (std::memory_order_acquire))
                 {
                     const bool running = source->loopback != nullptr
@@ -3479,19 +3584,20 @@ namespace
                     {
                         auto capture = std::make_unique<WasapiLoopbackCapture>();
                         std::string error;
-                        if (capture->start (
+                        if (capture->startMulti (
                                 std::wstring (source->def.endpoint.toWideCharPointer()),
                                 sink, error)
                             && std::abs (capture->getSampleRate() - rate) <= 0.5)
                         {
-                            drainRingTo (*source->ring, 0, drainL, drainR);
+                            drainRingChannels (*source->ring, 0, drainScratch, drainPointers);
                             source->loopback = std::move (capture);
                             source->online.store (true, std::memory_order_relaxed);
                             failures = 0;
                             std::cout << "Source " << source->def.id
                                       << " loopback reconnected: "
                                       << juce::String (capture->getEndpointName().c_str())
-                                      << " (" << capture->getSampleRate() << " Hz)\n";
+                                      << " (" << capture->getSampleRate() << " Hz, "
+                                      << capture->getChannelCount() << " ch)\n";
                         }
                         else if (++failures % 10 == 1)
                         {
@@ -4683,8 +4789,16 @@ namespace
             << "  NLMatrixRouter --config <preset.json> [--seconds N] [--control <cmd-file>]\n"
             << "  NLMatrixRouter --config <preset.json> --validate\n"
             << "  NLMatrixRouter --list\n"
+            << "  NLMatrixRouter --endpoint-info [name filter] [--json <file>]\n"
+            << "  NLMatrixRouter --leg-test <render endpoint> [--channels N] [--seconds S] [--json <file>]\n"
             << "  NLMatrixRouter --resampler-test\n"
             << "  NLMatrixRouter --matrix-test [--seconds N]\n\n"
+            << "  --endpoint-info lists WASAPI render/capture endpoints with the\n"
+            << "  channel count of their shared-mode format, so one endpoint's real\n"
+            << "  capacity is visible before routing it.\n"
+            << "  --leg-test writes a distinct sine per channel through one render\n"
+            << "  endpoint and captures the same endpoint with the native loopback\n"
+            << "  (exit 0 = every channel arrived with its own tone).\n\n"
             << "Source types: asio-in, loopback, capture, process, bus, driver\n"
             << "Destination types: asio-out, render, driver\n"
             << "Routes are explicit (source -> destination, gainDb). Mix-minus is\n"
@@ -4744,6 +4858,373 @@ namespace
         }
         return 0;
     }
+
+    //----------------------------------------------------------------------
+    // Windows endpoint capability probe and multi-channel leg verification.
+    // These are the tools that make "few Windows endpoints, many channels"
+    // checkable without starting the whole graph: they use the same WASAPI
+    // shared-mode path as the engine (render device + native loopback).
+    //----------------------------------------------------------------------
+    struct EndpointCapability
+    {
+        juce::String name;
+        bool capture = false;
+        int channels = 0;
+        double sampleRate = 0.0;
+        int bits = 0;
+    };
+
+    static std::vector<EndpointCapability> probeWasapiEndpoints()
+    {
+        std::vector<EndpointCapability> result;
+        auto wt = wasapiType();
+        if (wt == nullptr)
+            return result;
+        wt->scanForDevices();
+
+        for (const auto& name : wt->getDeviceNames (false))
+        {
+            EndpointCapability info;
+            info.name = name;
+            info.capture = false;
+            int channels = 0, bits = 0;
+            double rate = 0.0;
+            std::string error;
+            if (WasapiLoopbackCapture::probeRenderEndpoint (
+                    std::wstring (name.toWideCharPointer()), channels, rate, bits, error))
+            {
+                info.channels = channels;
+                info.sampleRate = rate;
+                info.bits = bits;
+            }
+            else
+            {
+                std::unique_ptr<juce::AudioIODevice> device (wt->createDevice (name, {}));
+                if (device != nullptr)
+                {
+                    info.channels = device->getOutputChannelNames().size();
+                    const auto rates = device->getAvailableSampleRates();
+                    if (! rates.isEmpty())
+                        info.sampleRate = rates[0];
+                }
+            }
+            if (info.channels > 0)
+                result.push_back (info);
+        }
+
+        for (const auto& name : wt->getDeviceNames (true))
+        {
+            EndpointCapability info;
+            info.name = name;
+            info.capture = true;
+            std::unique_ptr<juce::AudioIODevice> device (wt->createDevice ({}, name));
+            if (device != nullptr)
+            {
+                info.channels = device->getInputChannelNames().size();
+                const auto rates = device->getAvailableSampleRates();
+                if (! rates.isEmpty())
+                    info.sampleRate = rates[0];
+            }
+            if (info.channels > 0)
+                result.push_back (info);
+        }
+        return result;
+    }
+
+    static void writeTextFile (const juce::String& path, const juce::String& text)
+    {
+        if (path.isEmpty())
+            return;
+        juce::File file (path);
+        file.getParentDirectory().createDirectory();
+        file.replaceWithText (text);
+    }
+
+    static int printEndpointInfo (const juce::String& filter, const juce::String& jsonPath)
+    {
+        const auto endpoints = probeWasapiEndpoints();
+        juce::StringArray lines;
+        juce::StringArray jsonItems;
+
+        for (const auto& endpoint : endpoints)
+        {
+            if (filter.isNotEmpty() && ! endpoint.name.containsIgnoreCase (filter))
+                continue;
+            juce::String line;
+            line << (endpoint.capture ? "capture" : "render")
+                 << " | " << juce::String (endpoint.channels) << " ch | "
+                 << juce::String (endpoint.sampleRate, 0) << " Hz | ";
+            if (endpoint.bits > 0)
+                line << juce::String (endpoint.bits) << "-bit | ";
+            line << endpoint.name;
+            lines.add (line);
+            std::cout << line << "\n";
+
+            juce::String item;
+            item << "    { \"kind\": \"" << (endpoint.capture ? "capture" : "render")
+                 << "\", \"channels\": " << endpoint.channels
+                 << ", \"sampleRate\": " << juce::String (endpoint.sampleRate, 3)
+                 << ", \"bits\": " << endpoint.bits
+                 << ", \"name\": \"" << jsonEscape (endpoint.name) << "\" }";
+            jsonItems.add (item);
+        }
+
+        std::cout << "endpoints: " << lines.size() << "\n";
+        if (jsonPath.isNotEmpty())
+        {
+            juce::String json;
+            json << "{\n  \"endpoints\": [\n" << jsonItems.joinIntoString (",\n")
+                 << "\n  ]\n}\n";
+            writeTextFile (jsonPath, json);
+            std::cout << "json: " << jsonPath << "\n";
+        }
+        return 0;
+    }
+
+    class LegToneWriter final : public juce::AudioIODeviceCallback
+    {
+    public:
+        explicit LegToneWriter (std::vector<double> toneFrequencies)
+            : frequencies (std::move (toneFrequencies)), phases (frequencies.size(), 0.0)
+        {
+        }
+
+        void audioDeviceAboutToStart (juce::AudioIODevice* device) override
+        {
+            sampleRate = device != nullptr ? device->getCurrentSampleRate() : 48000.0;
+            if (! (sampleRate > 0.0))
+                sampleRate = 48000.0;
+        }
+        void audioDeviceStopped() override {}
+        void audioDeviceError (const juce::String&) override {}
+
+        void audioDeviceIOCallbackWithContext (const float* const*, int,
+                                               float* const* output, int numOutputs, int numSamples,
+                                               const juce::AudioIODeviceCallbackContext&) override
+        {
+            for (int ch = 0; ch < numOutputs; ++ch)
+            {
+                if (output[ch] == nullptr)
+                    continue;
+                const double frequency = ch < (int) frequencies.size() ? frequencies[(size_t) ch] : 0.0;
+                if (frequency <= 0.0)
+                {
+                    juce::FloatVectorOperations::clear (output[ch], numSamples);
+                    continue;
+                }
+                double phase = ch < (int) phases.size() ? phases[(size_t) ch] : 0.0;
+                const double step = juce::MathConstants<double>::twoPi * frequency / sampleRate;
+                for (int i = 0; i < numSamples; ++i)
+                {
+                    output[ch][i] = (float) (kLevel * std::sin (phase));
+                    phase += step;
+                }
+                if (phase > juce::MathConstants<double>::twoPi)
+                    phase = std::fmod (phase, juce::MathConstants<double>::twoPi);
+                if (ch < (int) phases.size())
+                    phases[(size_t) ch] = phase;
+            }
+        }
+
+    private:
+        static constexpr double kLevel = 0.25;
+        std::vector<double> frequencies, phases;
+        double sampleRate = 48000.0;
+    };
+
+    struct LegChannelState
+    {
+        // Goertzel filters: one at the expected tone, one well away from it.
+        double coeffTarget = 0.0, coeffNoise = 0.0;
+        double s1t = 0.0, s2t = 0.0, s1n = 0.0, s2n = 0.0;
+        double sumSquares = 0.0;
+        double maxAbs = 0.0;
+        uint64_t samples = 0;
+    };
+
+    static double goertzelMagnitude (double s1, double s2, double coefficient, uint64_t samples)
+    {
+        if (samples == 0)
+            return 0.0;
+        const double power = s1 * s1 + s2 * s2 - coefficient * s1 * s2;
+        return 2.0 * std::sqrt (juce::jmax (0.0, power)) / (double) samples;
+    }
+
+    // Round-trip verification of one Windows render endpoint: distinct sine per
+    // channel is written through WASAPI shared mode and captured back from the
+    // same endpoint with the native loopback.  A pass proves that the endpoint
+    // really carries N independent channels end to end.
+    static int runLegTest (const juce::String& endpointName, int requestedChannels,
+                           double seconds, const juce::String& jsonPath)
+    {
+        if (endpointName.isEmpty())
+        {
+            std::cerr << "--leg-test needs a render endpoint name\n";
+            return 2;
+        }
+        if (! (seconds > 0.0))
+            seconds = 3.0;
+
+        int nativeChannels = 0, bits = 0;
+        double nativeRate = 0.0;
+        std::string probeError;
+        if (! WasapiLoopbackCapture::probeRenderEndpoint (
+                std::wstring (endpointName.toWideCharPointer()),
+                nativeChannels, nativeRate, bits, probeError))
+        {
+            std::cerr << "Leg test: " << (probeError.empty() ? "endpoint not found" : probeError)
+                      << "\n";
+            return 3;
+        }
+
+        const int channels = requestedChannels > 0
+                                 ? juce::jlimit (1, 32, requestedChannels) : nativeChannels;
+        if (channels > nativeChannels)
+        {
+            std::cerr << "Leg test: requested " << channels << " channels but the endpoint exposes "
+                      << nativeChannels << " (shared mode cannot exceed the endpoint format)\n";
+            return 4;
+        }
+
+        std::vector<double> frequencies ((size_t) channels);
+        for (int ch = 0; ch < channels; ++ch)
+            frequencies[(size_t) ch] = 400.0 + 40.0 * ch;
+
+        auto state = std::make_unique<std::vector<LegChannelState>> ((size_t) channels);
+        const double rate = nativeRate > 0.0 ? nativeRate : 48000.0;
+        for (int ch = 0; ch < channels; ++ch)
+        {
+            auto& s = (*state)[(size_t) ch];
+            const double target = frequencies[(size_t) ch];
+            const double noise = target + 150.0;
+            s.coeffTarget = 2.0 * std::cos (juce::MathConstants<double>::twoPi * target / rate);
+            s.coeffNoise = 2.0 * std::cos (juce::MathConstants<double>::twoPi * noise / rate);
+        }
+
+        auto* accumulator = state.get();
+        WasapiLoopbackCapture::MultiSink sink =
+            [accumulator] (const float* const* data, int numChannels, int numFrames)
+        {
+            const int count = juce::jmin (numChannels, (int) accumulator->size());
+            for (int i = 0; i < numFrames; ++i)
+            {
+                for (int ch = 0; ch < count; ++ch)
+                {
+                    const double x = (double) data[ch][i];
+                    auto& s = (*accumulator)[(size_t) ch];
+                    s.sumSquares += x * x;
+                    s.maxAbs = juce::jmax (s.maxAbs, std::abs (x));
+                    const double nextTarget = x + s.coeffTarget * s.s1t - s.s2t;
+                    s.s2t = s.s1t;
+                    s.s1t = nextTarget;
+                    const double nextNoise = x + s.coeffNoise * s.s1n - s.s2n;
+                    s.s2n = s.s1n;
+                    s.s1n = nextNoise;
+                    ++s.samples;
+                }
+            }
+        };
+
+        auto wt = wasapiType();
+        if (wt == nullptr)
+        {
+            std::cerr << "Leg test: WASAPI unavailable\n";
+            return 5;
+        }
+        wt->scanForDevices();
+        const auto resolved = chooseName (wt->getDeviceNames (false), endpointName, {});
+        if (resolved.isEmpty())
+        {
+            std::cerr << "Leg test: endpoint not found: " << endpointName << "\n";
+            return 3;
+        }
+
+        std::unique_ptr<juce::AudioIODevice> device (wt->createDevice (resolved, {}));
+        if (device == nullptr)
+        {
+            std::cerr << "Leg test: cannot create the WASAPI device\n";
+            return 5;
+        }
+
+        juce::BigInteger outputMask;
+        outputMask.setRange (0, channels, true);
+        const auto openError = device->open ({}, outputMask, rate, 512);
+        if (openError.isNotEmpty())
+        {
+            std::cerr << "Leg test: open failed: " << openError << "\n";
+            return 5;
+        }
+
+        WasapiLoopbackCapture loopback;
+        std::string loopError;
+        if (! loopback.startMulti (std::wstring (resolved.toWideCharPointer()), sink, loopError))
+        {
+            std::cerr << "Leg test: loopback start failed: "
+                      << (loopError.empty() ? "unknown" : loopError) << "\n";
+            return 6;
+        }
+
+        LegToneWriter writer (frequencies);
+        device->start (&writer);
+        const double deadline = juce::Time::getMillisecondCounterHiRes() + seconds * 1000.0;
+        while (juce::Time::getMillisecondCounterHiRes() < deadline)
+            juce::Thread::sleep (50);
+        device->stop();
+        loopback.stop();
+
+        juce::StringArray report;
+        int failed = 0;
+        juce::String jsonItems;
+        for (int ch = 0; ch < channels; ++ch)
+        {
+            const auto& s = (*state)[(size_t) ch];
+            const double targetMag = goertzelMagnitude (s.s1t, s.s2t, s.coeffTarget, s.samples);
+            const double noiseMag = goertzelMagnitude (s.s1n, s.s2n, s.coeffNoise, s.samples);
+            const double rms = s.samples > 0 ? std::sqrt (s.sumSquares / (double) s.samples) : 0.0;
+            const double rmsDb = rms > 0.0 ? 20.0 * std::log10 (rms) : -120.0;
+            const bool levelOk = rmsDb > -45.0;
+            const bool toneOk = targetMag > 0.02 && targetMag > 4.0 * noiseMag;
+            const bool ok = levelOk && toneOk;
+            if (! ok)
+                ++failed;
+
+            juce::String line;
+            line << "ch " << ch << ": expected " << juce::String (frequencies[(size_t) ch], 1)
+                 << " Hz, level " << juce::String (rmsDb, 1) << " dBFS, tone "
+                 << juce::String (targetMag, 4) << ", noise " << juce::String (noiseMag, 4)
+                 << " -> " << (ok ? "PASS" : "FAIL");
+            report.add (line);
+            std::cout << line << "\n";
+
+            if (ch > 0)
+                jsonItems << ",\n";
+            jsonItems << "    { \"channel\": " << ch
+                      << ", \"expectedHz\": " << juce::String (frequencies[(size_t) ch], 1)
+                      << ", \"levelDb\": " << juce::String (rmsDb, 2)
+                      << ", \"toneMagnitude\": " << juce::String (targetMag, 5)
+                      << ", \"noiseMagnitude\": " << juce::String (noiseMag, 5)
+                      << ", \"ok\": " << (ok ? "true" : "false") << " }";
+        }
+
+        const bool pass = failed == 0 && (int) (*state)[0].samples > 0;
+        std::cout << "leg " << resolved << ": " << channels << " channel(s), "
+                  << (pass ? "PASS" : "FAIL") << "\n";
+
+        if (jsonPath.isNotEmpty())
+        {
+            juce::String json;
+            json << "{\n  \"endpoint\": \"" << jsonEscape (resolved) << "\",\n"
+                 << "  \"nativeChannels\": " << nativeChannels << ",\n"
+                 << "  \"testedChannels\": " << channels << ",\n"
+                 << "  \"sampleRate\": " << juce::String (rate, 3) << ",\n"
+                 << "  \"seconds\": " << juce::String (seconds, 2) << ",\n"
+                 << "  \"verdict\": \"" << (pass ? "PASS" : "FAIL") << "\",\n"
+                 << "  \"channels\": [\n" << jsonItems << "\n  ]\n}\n";
+            writeTextFile (jsonPath, json);
+            std::cout << "json: " << jsonPath << "\n";
+        }
+        return pass ? 0 : 7;
+    }
 } // namespace
 
 int main (int argc, char* argv[])
@@ -4757,6 +5238,11 @@ int main (int argc, char* argv[])
     bool validateOnly = false;
     bool matrixTest = false;
     bool buildInfo = false;
+    bool endpointInfo = false;
+    juce::String endpointFilter;
+    juce::String legTestEndpoint;
+    int legTestChannels = 0;
+    juce::String jsonPath;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -4783,6 +5269,18 @@ int main (int argc, char* argv[])
             matrixTest = true;
         else if (arg == "--list")
             list = true;
+        else if (arg == "--endpoint-info")
+        {
+            endpointInfo = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-')
+                endpointFilter = juce::String (argv[++i]);
+        }
+        else if (arg == "--leg-test" && i + 1 < argc)
+            legTestEndpoint = juce::String (argv[++i]);
+        else if (arg == "--channels" && i + 1 < argc)
+            legTestChannels = juce::String (argv[++i]).getIntValue();
+        else if (arg == "--json" && i + 1 < argc)
+            jsonPath = juce::String (argv[++i]);
         else if (arg == "--validate")
             validateOnly = true;
         else if (arg == "--help" || arg == "-h")
@@ -4805,6 +5303,10 @@ int main (int argc, char* argv[])
     }
     if (inspectAsioName.isNotEmpty())
         return inspectAsioDevice (inspectAsioName);
+    if (endpointInfo)
+        return printEndpointInfo (endpointFilter, jsonPath);
+    if (legTestEndpoint.isNotEmpty())
+        return runLegTest (legTestEndpoint, legTestChannels, seconds, jsonPath);
     if (matrixTest)
         return runMatrixSelfTest (seconds > 0.0 ? seconds : 15.0);
 

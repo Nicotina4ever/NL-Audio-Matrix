@@ -5,6 +5,10 @@ struct DeviceBrowserItem
     juce::String category, name, detail, deviceId;
     juce::String sourceType, destinationType, endpoint;
     int driverEndpoint = 0;
+    // Shared-mode channel count of the endpoint, when known: it is what the
+    // engine will really open, and the default channel count of the new leg.
+    int channelCount = 0;
+    double sampleRate = 0.0;
 };
 
 class DeviceBrowserComponent final : public juce::Component, private juce::ListBoxModel

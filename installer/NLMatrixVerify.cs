@@ -114,6 +114,150 @@ internal static class NlVerify
         return outcome;
     }
 
+    // ------------------------------------------------- standard Windows mode
+    // The application is installed without the NL kernel driver, so verification
+    // checks only what standard mode installs: application files, programs, the
+    // Add/Remove and Start Menu entries and (on request) the app start/stop test.
+    // It must never fail because the NL driver package, certificate, device or the
+    // eight NL endpoints are absent: those do not exist in standard Windows mode.
+    public static VerifyOutcome RunStandard(SetupLog log, string appDir, bool appSelfTest)
+    {
+        var outcome = new VerifyOutcome();
+        log.Step("Verifying the standard Windows installation in " + appDir);
+        selfTestOk = false;
+        selfTestSummary = "not run";
+
+        string packageVersion = NlDiagnostics.ReadVersionValue(appDir, "version");
+        string packageBuildId = NlDiagnostics.ReadVersionValue(appDir, "buildId");
+        int appFileProblems = 0;
+        var problems = new List<string>();
+        bool appDirExists = Directory.Exists(appDir);
+        bool arp = NlReg.HasUninstallEntry();
+        bool startMenu = Directory.Exists(NlShell.StartMenuFolder());
+        string[] requiredExes = { NlConst.UiExeName, NlConst.RouterExeName, NlConst.UninstallerExeName };
+
+        var missingExes = new List<string>();
+        foreach (var exe in requiredExes)
+            if (!appDirExists || !File.Exists(System.IO.Path.Combine(appDir, exe))) missingExes.Add(exe);
+
+        if (!appDirExists)
+        {
+            problems.Add("the installation folder is missing: " + appDir);
+        }
+        else
+        {
+            string manifestPath = System.IO.Path.Combine(appDir, "SHA256SUMS.txt");
+            if (!File.Exists(manifestPath))
+            {
+                problems.Add("SHA256SUMS.txt is missing from the installation folder");
+            }
+            else
+            {
+                try
+                {
+                    var entries = NlManifest.Parse(manifestPath);
+                    var fileProblems = NlManifest.VerifyInstall(appDir, entries, log);
+                    appFileProblems = fileProblems.Count;
+                    foreach (var problem in fileProblems) problems.Add("application file " + problem);
+                    log.Info("Application files: " + entries.Count + " file(s) verified against SHA256SUMS.txt, " +
+                             appFileProblems + " problem(s).");
+                }
+                catch (Exception ex)
+                {
+                    appFileProblems = -1;
+                    problems.Add("cannot verify the installed files: " + ex.Message);
+                }
+            }
+        }
+        if (missingExes.Count > 0)
+            problems.Add("missing program(s): " + string.Join(", ", missingExes.ToArray()));
+        else
+            log.Info("Application programs present: " + string.Join(", ", requiredExes));
+        if (!arp) problems.Add("the Add/Remove Programs entry is missing");
+        if (!startMenu) problems.Add("the Start Menu entries are missing");
+        log.Info("Standard Windows mode: no NL kernel driver, driver package, test certificate, " +
+                 "driver service or NL audio endpoint is required.");
+
+        // Informational only: the audio endpoints Windows currently exposes.
+        var inventory = NlEndpoints.Inventory(log);
+        log.Info("Audio endpoint inventory (informational, no requirement): " + inventory.Summary);
+        foreach (var name in inventory.CaptureNames) log.Info("  capture endpoint: " + name);
+        foreach (var name in inventory.RenderNames) log.Info("  render endpoint: " + name);
+
+        // Light engine probe: proves the audio engine binary starts without opening
+        // an audio device.  Non-fatal because a non-interactive session may refuse a
+        // GUI initialisation; /app-selftest runs the full UI start/stop check.
+        string router = System.IO.Path.Combine(appDir, NlConst.RouterExeName);
+        if (File.Exists(router))
+        {
+            var probe = Sys.Run(router, "--buildinfo", 30000);
+            log.Command(probe);
+            if (probe.Started && !probe.TimedOut && probe.ExitCode == 0)
+                log.Info("Engine startup probe: NLMatrixRouter.exe --buildinfo exited 0.");
+            else
+                log.Warn("Engine startup probe did not complete (exit " + probe.ExitCode +
+                         (probe.TimedOut ? ", TIMEOUT" : "") +
+                         "); standard-mode verification does not require it.");
+        }
+
+        if (appSelfTest)
+        {
+            var selfTestReport = new SetupDiagnosticsReport { AppDir = appDir };
+            RunApplicationSelfTest(log, selfTestReport);
+            foreach (var problem in selfTestReport.Problems) problems.Add(problem);
+            if (!selfTestOk && selfTestReport.Problems.Count == 0)
+                problems.Add("application start/stop test failed: " + selfTestSummary);
+        }
+
+        var report = new SetupDiagnosticsReport
+        {
+            Kind = "verify-standard",
+            Utc = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture),
+            AppDir = appDir,
+            PackageVersion = packageVersion,
+            PackageBuildId = packageBuildId,
+            InstalledAppVersion = packageVersion,
+            AppFileProblems = appFileProblems,
+            ArpEntry = arp,
+            StartMenu = startMenu,
+            Pending = NlPendingReboot.Read(),
+            AppSelfTestRan = appSelfTest,
+            AppSelfTestOk = selfTestOk,
+            AppSelfTestSummary = selfTestSummary
+        };
+        report.Problems.AddRange(problems);
+        report.Healthy = problems.Count == 0;
+        report.ExitCode = report.Healthy ? 0 : 9;
+        outcome.Healthy = report.Healthy;
+        outcome.ExitCode = report.ExitCode;
+        outcome.ReportPath = NlDiagnostics.WriteReport(log, report);
+
+        var sb = new StringBuilder();
+        sb.AppendLine("NL Audio Matrix verification — standard Windows mode — " +
+                      DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture));
+        sb.AppendLine("  Installation folder : " + appDir);
+        sb.AppendLine("  Application         : " + Safe(packageVersion, "not installed") +
+                      " (build " + Safe(packageBuildId, "unknown") + "), " + appFileProblems + " file problem(s)");
+        sb.AppendLine("  Programs            : " + (missingExes.Count == 0
+            ? NlConst.UiExeName + ", " + NlConst.RouterExeName + ", " + NlConst.UninstallerExeName
+            : "missing: " + string.Join(", ", missingExes.ToArray())));
+        sb.AppendLine("  Add/Remove entry    : " + (arp ? "present" : "missing"));
+        sb.AppendLine("  Start Menu          : " + (startMenu ? "present" : "missing"));
+        sb.AppendLine("  NL driver required  : no (standard mode: no kernel driver, certificate or NL endpoint check)");
+        sb.AppendLine("  Audio endpoints     : " + inventory.Summary + " (informational; external endpoints are optional)");
+        if (appSelfTest) sb.AppendLine("  App start/stop      : " + selfTestSummary);
+        sb.AppendLine("  Result              : " + (outcome.Healthy ? "READY" : "NOT READY"));
+        if (!outcome.Healthy)
+        {
+            sb.AppendLine("  Problems:");
+            foreach (var problem in problems) sb.AppendLine("    - " + problem);
+        }
+        if (outcome.ReportPath.Length > 0) sb.AppendLine("  Report              : " + outcome.ReportPath);
+        sb.AppendLine("  Log                 : " + log.Path);
+        outcome.Text = sb.ToString();
+        return outcome;
+    }
+
     // ------------------------------------------------------- removal verification
     private static void VerifyAbsence(SetupLog log, VerifyOutcome outcome, string appDir, string packageVersion,
                                       string packageBuildId, string driverVersion, string signature,
@@ -122,7 +266,9 @@ internal static class NlVerify
         var endpoints = NlEndpoints.Collect(log);
         var packages = NlDrivers.FindInstalled(log);
         bool certTrusted = NlCert.IsAnyTrusted(log);
-        bool service = NlDevices.ServiceExists(log);
+        // ServiceRegistered also catches a service that is only marked for deletion
+        // (still present until the reboot): that is not a clean removal.
+        bool service = NlDevices.ServiceRegistered(log);
         bool arp = NlReg.HasUninstallEntry();
         bool startMenu = Directory.Exists(NlShell.StartMenuFolder());
         bool appPresent = Directory.Exists(appDir) && File.Exists(System.IO.Path.Combine(appDir, NlConst.UiExeName));
