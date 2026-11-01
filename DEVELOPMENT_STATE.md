@@ -698,3 +698,45 @@ BCD byte-identico.
 standard, e i 10 canali Apollo in prova hardware (A9/A13/A14, invariati).
 
 
+
+## Incremento 2026-11-01 (pomeriggio) — VM Windows standard, invio VB-CABLE, sessione Studio, rifiniture GUI
+
+**Build**: `20261101-0706-db33ea0` (commit `db33ea0`), GUI `0F7485F7...` / router `33928E94...`; GUI selftest in VM **103/103 PASS**.
+
+- **VM in modalita Windows standard (A32)**: test signing spento (`bcdedit` -> `testsigning No`), driver NL disinstallato,
+  nessun device `ROOT\MEDIA\*` NL; restano gli endpoint firmati (VB-CABLE, VB-Matrix VAIO, HD Audio) e gli ASIO
+  (FlexASIO, Focusrite, ReaRoute, VB-Matrix). L'installer `--mode install /silent` senza `/no-driver` sceglie da solo
+  la modalita standard: exit 0, log "standard Windows mode ... no NL kernel driver", nessuna operazione
+  devcon/pnputil/certificato/endpoint e nessun riavvio. `--mode verify` -> READY, "NL driver required: no",
+  capture 13 (10 active) / render 17 (11 active).
+- **Percorso invio completo (A33)**: `tools/vm/Run-SendCableCheck.ps1` PASS 15/15 sul percorso reale
+  NL Matrix -> WASAPI render CABLE Input -> driver VB-CABLE -> WASAPI capture CABLE Output -> registrazione ffmpeg.
+  Livello -15,09 dBFS RMS / -11,87 dBFS picco; tono 1000 Hz -12,13 dBFS (L), 1040 Hz -12,28 dBFS (R) con rapporto
+  tono/rumore 270x e 475x; continuita 0,02 ms; gain -12 dB (delta 12,01 dB); mute -76,6 dBFS; cavo rilasciato dopo
+  lo stop (-96,3 dBFS); riavvio del motore che ritrasmette. Il test precedente usava il loopback dello stesso
+  endpoint render e non dimostrava il percorso completo.
+- **Sessione Studio bidirezionale (A34)**: `tools/vm/Run-StudioSessionCheck.ps1` PASS 11/11 senza driver NL
+  (monitor su uscita ASIO): sorgente locale + ritorno remoto in **process loopback** (-12 dB) verso il bus `sendMix`
+  con N-1 e il bus `monMix` completo. Ritorno respinto dall'invio a -86/-84 dBFS; monMix 0,505 (= 0,25 locale +
+  0,25 remoto) contro sendMix 0,25; monitor -6 dB; continuita 0,04 ms. Nuovo **mix-minus a livello di bus** nel
+  motore (`BusDef.mixMinusSources`, `GraphSnapshot.busExcluded`): prima l'N-1 funzionava solo su rotte dirette.
+  Nota ambiente: FlexASIO usa un profilo exclusive per il clock del test di invio e shared per la sessione Studio,
+  perche' un flusso render exclusive non e' catturabile dal loopback.
+- **Quick Connect dalla GUI in modalita Windows endpoint (A35)**: `tools/vm/Run-QuickConnectUserModeCheck.ps1`
+  PASS 6/6 sul percorso di produzione `--quickconnecttest --qc-windows-endpoint`: tono sul cavo a -13,3 dBFS,
+  preset in directory propria, nessun processo residuo.
+- **GUI (C16)**: la sezione Quick Connect non e' piu' permanente: chip rimosso (5 chip: Routing/Studio/Mixer/
+  Dispositivi/Diagnostica) e nuovo pulsante "Quick Connect" nella riga status in alto che apre lo stesso dialog;
+  restano le voci di menu. L10n IT/EN e tooltip.
+- **GUI (C17)**: nel pannello Dispositivi un footer read-only elenca gli **endpoint Windows** con gruppi
+  Render (destinazione) / Cattura (sorgente) e `N ch . nome`, con probe on-demand all'apertura del pannello e su
+  "Refresh devices". Sono endpoint usabili nelle rotte, non device del grafo: nessun endpoint viene aggiunto a
+  `devices[]` o al profilo e nessun canale ASIO viene consumato.
+- **GUI (C18)**: due **splitter** verticali (sinistra-patchbay, patchbay-destra) con clamp 300/220 px e patchbay
+  sempre >= 220 px; larghezze di sessione, non persistite. Pulsante "Stacca"/"Detach" apre `DetachedMetersWindow`
+  che riusa `MeterPanel` invariato; il main restituisce lo spazio alla lista Connessioni, la X ripristina il
+  pannello e la finestra viene distrutta nel `~MainComponent`. Il detach degli elenchi e del patchbay resta fuori:
+  il loro layout e il wiring eventi vivono in `MainComponent::resized()` e richiederebbe un refactor non chirurgico.
+- **Da collaudare**: splitter e detach a video a DPI 125/150% (verificati per costruzione con unita' logiche e dai
+  check di layout del selftest), larghezze dei pannelli non ricordate dopo il riavvio (scelta deliberata) e
+  10 canali Apollo su hardware reale (A9/A13/A14 invariati).
