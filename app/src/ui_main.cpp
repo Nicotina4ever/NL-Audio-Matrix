@@ -245,6 +245,7 @@ namespace
                 { "Misuratori", "Meters" },
                 { "Connessioni", "Connections" },
                 { "Rimuovi", "Remove" },
+                { "Stacca", "Detach" },
                 { "Aggiorna selezionato", "Update" },
                 { "Rimuovi selezionato", "Remove selected" },
                 { "Rimuovi rotta", "Remove selected" },
@@ -265,6 +266,7 @@ namespace
                 { "Uscita ASIO", "ASIO output" },
                 { "Endpoint render Windows", "Windows render endpoint" },
                 { "Endpoint virtuale NL (driver)", "NL virtual endpoint (driver)" },
+                { "Endpoint Windows (render / capture)", "Windows endpoints (render / capture)" },
                 // ---- editor placeholders ----
                 { "nome sorgente", "source name" },
                 { "canali ASIO, es. 1,2", "ASIO channels, e.g. 1,2" },
@@ -2130,6 +2132,92 @@ namespace
         std::vector<MeterRow> rows;
     };
 
+    // Detached meters: the meters panel can be shown in its own window while
+    // the main window keeps the routing work.  The window reuses MeterPanel
+    // unchanged and is fed the same rows by the owner, so no metering or
+    // audio-model code is duplicated.
+    class DetachedMetersWindow final : public juce::DocumentWindow
+    {
+    public:
+        explicit DetachedMetersWindow (std::function<void()> onClosed)
+            : juce::DocumentWindow (L10n::tr ("NL Audio Matrix - Misuratori",
+                                              "NL Audio Matrix - Meters"),
+                                    Palette::background, juce::DocumentWindow::closeButton),
+              closedCallback (std::move (onClosed))
+        {
+            setUsingNativeTitleBar (true);
+            // The window owns the panel (MeterPanel reused unchanged); the
+            // owner only pushes rows into it.
+            meters = new MeterPanel();
+            meters->setSize (420, 500);
+            setContentOwned (meters, true);
+            setResizable (true, true);
+            setResizeLimits (260, 220, 1400, 1800);
+            centreWithSize (440, 540);
+            setVisible (true);
+        }
+
+        void setRows (const std::vector<MeterRow>& newRows)
+        {
+            if (meters != nullptr)
+                meters->setRows (newRows);
+        }
+
+        void closeButtonPressed() override
+        {
+            if (closedCallback != nullptr)
+                closedCallback();
+            delete this;
+        }
+
+    private:
+        MeterPanel* meters = nullptr; // owned by the window content
+        std::function<void()> closedCallback;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DetachedMetersWindow)
+    };
+
+    // Thin draggable divider for the main panes (left lists / patchbay / right
+    // column).  It only reports drag deltas: the owner keeps clamping the pane
+    // widths, so the layout stays valid at every window size.
+    class PaneResizer final : public juce::Component
+    {
+    public:
+        explicit PaneResizer (bool verticalDivider) : vertical (verticalDivider)
+        {
+            setMouseCursor (vertical ? juce::MouseCursor::LeftRightResizeCursor
+                                     : juce::MouseCursor::UpDownResizeCursor);
+        }
+
+        std::function<void (int)> onDragDelta;
+
+        void mouseDown (const juce::MouseEvent& e) override
+        {
+            dragStart = vertical ? e.getPosition().x : e.getPosition().y;
+        }
+
+        void mouseDrag (const juce::MouseEvent& e) override
+        {
+            const int position = vertical ? e.getPosition().x : e.getPosition().y;
+            const int delta = position - dragStart;
+            dragStart = position;
+            if (onDragDelta != nullptr)
+                onDragDelta (delta);
+        }
+
+        void paint (juce::Graphics& g) override
+        {
+            g.setColour (Palette::outline.withAlpha (0.55f));
+            g.fillRect (getLocalBounds().reduced (vertical ? 2 : 4, vertical ? 4 : 2));
+        }
+
+    private:
+        bool vertical = true;
+        int dragStart = 0;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PaneResizer)
+    };
+
     struct RowModel final : public juce::ListBoxModel
     {
         juce::StringArray rows;
@@ -2915,6 +3003,17 @@ namespace
             EngineUiSettings engine;
         };
 
+        // Read-only WASAPI endpoint inventory shown under the ASIO rows.  These
+        // endpoints are usable in routes (loopback/capture source, render
+        // destination) but they are not devices of the graph and consume no
+        // ASIO channels, so they are deliberately not added to devices[].
+        struct WindowsEndpoint
+        {
+            juce::String name;
+            int channels = 0;
+            bool capture = false;
+        };
+
         std::function<void()> onApply;
         std::function<void()> onLayoutChanged;
 
@@ -2962,6 +3061,36 @@ namespace
                                         "router is stopped without a click, profile and preferences.json are "
                                         "rewritten and the engine restarted."));
             apply.onClick = [this] { if (onApply) onApply(); };
+
+            // Windows endpoints are listed here, not among the ASIO rows: it is
+            // the engine/device surface, and the operator must be able to see
+            // that they exist and how many channels they expose without opening
+            // a source/destination dialog first.
+            addAndMakeVisible (windowsEndpointsLabel);
+            L10n::bindLabelText (windowsEndpointsLabel, "Endpoint Windows (render / capture)");
+            windowsEndpointsLabel.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+            windowsEndpointsLabel.setColour (juce::Label::textColourId, Palette::text.withAlpha (0.85f));
+            const auto windowsEndpointsTooltip = L10n::tr (
+                "Endpoint WASAPI disponibili come sorgente (loopback/capture) o destinazione "
+                "(render) di una rotta. Sono endpoint Windows già firmati: non sono dispositivi "
+                "del grafo e non consumano canali ASIO.",
+                "WASAPI endpoints available as a route source (loopback/capture) or destination "
+                "(render). They are already-signed Windows endpoints: not graph devices, and they "
+                "consume no ASIO channels.");
+            windowsEndpointsLabel.setTooltip (windowsEndpointsTooltip);
+            addAndMakeVisible (windowsEndpointsView);
+            windowsEndpointsView.setMultiLine (true);
+            windowsEndpointsView.setReadOnly (true);
+            windowsEndpointsView.setCaretVisible (false);
+            windowsEndpointsView.setScrollbarsShown (true);
+            windowsEndpointsView.setFont (juce::FontOptions (11.5f));
+            windowsEndpointsView.setColour (juce::TextEditor::backgroundColourId,
+                                            juce::Colours::transparentBlack);
+            windowsEndpointsView.setColour (juce::TextEditor::outlineColourId,
+                                            juce::Colours::transparentBlack);
+            windowsEndpointsView.setColour (juce::TextEditor::textColourId, Palette::muted);
+            windowsEndpointsView.setTooltip (windowsEndpointsTooltip);
+            refreshWindowsEndpointText();
 
             addAndMakeVisible (rowsContent);
             rowsViewport.setViewedComponent (&rowsContent, false);
@@ -3116,6 +3245,15 @@ namespace
             }
         }
 
+        // Read-only inventory of the Windows endpoints the engine can route to
+        // and from.  The caller probes the channel counts; this component only
+        // displays them (and re-localises the text on a language switch).
+        void setWindowsEndpoints (std::vector<WindowsEndpoint> endpoints)
+        {
+            windowsEndpoints = std::move (endpoints);
+            refreshWindowsEndpointText();
+        }
+
         void refreshLocalisedTexts()
         {
             for (auto& row : rows)
@@ -3125,6 +3263,7 @@ namespace
                 setRowActual (*row, row->data);
             }
             refreshEngineItems();
+            refreshWindowsEndpointText();
             repaint();
         }
 
@@ -3134,8 +3273,9 @@ namespace
             h += visibleRowCount() * rowHeight;
             if (advancedFieldsVisible())
                 h += 2 + advancedHeight;
+            h += 2 + 15 + windowsListHeight; // Windows endpoint inventory
             h += 4;
-            return juce::jlimit (56, 220, h);
+            return juce::jlimit (56, 260, h);
         }
 
         void paint (juce::Graphics& g) override
@@ -3197,11 +3337,16 @@ namespace
                 area.removeFromTop (2);
                 layoutAdvancedFields (area.removeFromTop (advancedHeight));
             }
+
+            area.removeFromTop (2);
+            windowsEndpointsLabel.setBounds (area.removeFromTop (15));
+            windowsEndpointsView.setBounds (area.removeFromTop (windowsListHeight));
         }
 
     private:
         static constexpr int rowHeight = 28;
         static constexpr int advancedHeight = 26;
+        static constexpr int windowsListHeight = 44;
 
         struct Row
         {
@@ -3436,6 +3581,35 @@ namespace
                                   data.actualFallback ? Palette::warning : Palette::muted);
         }
 
+        void refreshWindowsEndpointText()
+        {
+            juce::StringArray lines;
+            auto addGroup = [&lines, this] (bool capture)
+            {
+                bool any = false;
+                for (const auto& endpoint : windowsEndpoints)
+                    if (endpoint.capture == capture)
+                        any = true;
+                if (! any)
+                    return;
+                lines.add (capture ? L10n::tr ("Cattura (sorgente)", "Capture (source)")
+                                   : L10n::tr ("Render (destinazione)", "Render (destination)"));
+                for (const auto& endpoint : windowsEndpoints)
+                    if (endpoint.capture == capture)
+                        lines.add ("  " + (endpoint.channels > 0
+                                               ? juce::String (endpoint.channels) + " ch"
+                                               : juce::String ("? ch"))
+                                   + L10n::utf8 ("  ·  ") + endpoint.name);
+            };
+            addGroup (false);
+            addGroup (true);
+            windowsEndpointsView.setText (lines.isEmpty()
+                                              ? L10n::tr ("Nessun endpoint Windows enumerato.",
+                                                          "No Windows endpoint enumerated.")
+                                              : lines.joinIntoString ("\n"),
+                                          juce::dontSendNotification);
+        }
+
         void createRow (const DeviceRowData& data)
         {
             auto row = std::make_unique<Row>();
@@ -3471,6 +3645,9 @@ namespace
         std::vector<std::unique_ptr<Row>> rows;
         juce::Viewport rowsViewport;
         juce::Rectangle<int> headerArea;
+        std::vector<WindowsEndpoint> windowsEndpoints;
+        juce::Label windowsEndpointsLabel;
+        juce::TextEditor windowsEndpointsView;
         juce::Label advRingMinLabel, advRingMaxLabel, advDriverMinLabel, advDriverMaxLabel,
                      advChunkLabel, advServoLabel;
         juce::TextEditor advRingMinEditor, advRingMaxEditor, advDriverMinEditor, advDriverMaxEditor,
@@ -3560,11 +3737,306 @@ namespace
        #endif
     }
 
+    //==============================================================================
+    // Quick Connect window: one compact dialog for the two wiring modes.
+    //
+    //  * "NL endpoints (driver)": original path; an ASIO channel is published on
+    //    an NL Mic pair by the NLMatrixAudio kernel driver.
+    //  * "Windows endpoints (signed)": user-mode path; an already-signed Windows
+    //    render endpoint (virtual cable or real hardware) receives the send leg,
+    //    so no TESTSIGNING and no NL driver are required.
+    //
+    // The rows that do not belong to the selected mode are hidden instead of
+    // being laid out empty, and the window height follows the visible content,
+    // so the dialog stays readable at 125%/150% DPI without clipped labels or
+    // overlapping controls.
+    class QuickConnectDialogComponent final : public juce::Component
+    {
+    public:
+        QuickConnectDialogComponent (const juce::StringArray& asioDevices,
+                                     const juce::StringArray& renderEndpoints,
+                                     const juce::StringArray& captureEndpoints,
+                                     const juce::String& initialDriver,
+                                     int initialChannel,
+                                     int initialNlEndpoint,
+                                     bool initialBidirectional,
+                                     bool initialWindowsEndpoint,
+                                     const juce::String& initialRenderEndpoint,
+                                     const juce::String& initialCaptureEndpoint)
+            : renderNames (renderEndpoints), captureNames (captureEndpoints)
+        {
+            configureLabel (modeLabel, L10n::tr ("Modalità", "Mode"));
+            addAndMakeVisible (modeLabel);
+            mode.addItem (L10n::tr ("Endpoint NL (driver)", "NL endpoints (driver)"), 1);
+            mode.addItem (L10n::tr ("Endpoint Windows (firmati)",
+                                    "Windows endpoints (signed)"), 2);
+            mode.setSelectedId (initialWindowsEndpoint ? 2 : 1, juce::dontSendNotification);
+            mode.onChange = [this] { updateMode(); };
+            addAndMakeVisible (mode);
+
+            configureLabel (driverLabel, L10n::tr ("Dispositivo ASIO (sorgente)",
+                                                   "ASIO device (source)"));
+            addAndMakeVisible (driverLabel);
+            for (int i = 0; i < asioDevices.size(); ++i)
+                driver.addItem (asioDevices[i], i + 1);
+            if (initialDriver.isNotEmpty() && asioDevices.contains (initialDriver))
+                driver.setText (initialDriver, juce::dontSendNotification);
+            else if (! asioDevices.isEmpty())
+                driver.setSelectedId (1, juce::dontSendNotification);
+            driver.setTooltip (L10n::tr ("Driver ASIO della sorgente",
+                                         "ASIO driver of the source"));
+            addAndMakeVisible (driver);
+
+            configureLabel (channelLabel, L10n::tr ("Canale ASIO (1 = primo)",
+                                                    "ASIO channel (1 = first)"));
+            addAndMakeVisible (channelLabel);
+            channel.setText (juce::String (juce::jmax (1, initialChannel)),
+                             juce::dontSendNotification);
+            channel.setInputRestrictions (3, "0123456789");
+            channel.setJustification (juce::Justification::centredLeft);
+            channel.setTooltip (L10n::tr ("Un solo canale ASIO, numerazione 1-based",
+                                          "One ASIO channel, 1-based numbering"));
+            channel.onReturnKey = [this] { start.triggerClick(); };
+            addAndMakeVisible (channel);
+
+            configureLabel (nlEndpointLabel, L10n::tr ("Endpoint NL Mic", "NL Mic endpoint"));
+            addAndMakeVisible (nlEndpointLabel);
+            for (int i = 1; i <= 4; ++i)
+                nlEndpoint.addItem ("NL Mic " + juce::String (i), i);
+            nlEndpoint.setSelectedId (juce::jlimit (1, 4, initialNlEndpoint + 1),
+                                      juce::dontSendNotification);
+            nlEndpoint.setTooltip (L10n::tr ("Coppia di endpoint virtuali del driver NL",
+                                             "Virtual endpoint pair of the NL driver"));
+            addAndMakeVisible (nlEndpoint);
+
+            configureLabel (renderLabel, L10n::tr ("Endpoint render Windows",
+                                                   "Windows render endpoint"));
+            addAndMakeVisible (renderLabel);
+            if (renderNames.isEmpty())
+            {
+                render.addItem (L10n::tr ("(nessun endpoint render trovato)",
+                                          "(no render endpoint found)"), 1);
+                render.setEnabled (false);
+            }
+            else
+            {
+                for (int i = 0; i < renderNames.size(); ++i)
+                    render.addItem (renderNames[i], i + 1);
+                const auto wanted = renderNames.indexOf (initialRenderEndpoint);
+                render.setSelectedId (wanted >= 0 ? wanted + 1 : 1, juce::dontSendNotification);
+            }
+            render.onChange = [this] { render.setTooltip (render.getText()); };
+            render.setTooltip (render.getText());
+            addAndMakeVisible (render);
+
+            configureLabel (captureLabel, L10n::tr ("Endpoint capture di ritorno",
+                                                    "Return capture endpoint"));
+            addAndMakeVisible (captureLabel);
+            capture.addItem (L10n::tr ("(nessuno: loopback del render)",
+                                       "(none: loopback of the render)"), 1);
+            for (int i = 0; i < captureNames.size(); ++i)
+                capture.addItem (captureNames[i], i + 2);
+            const auto wantedCapture = captureNames.indexOf (initialCaptureEndpoint);
+            capture.setSelectedId (wantedCapture >= 0 ? wantedCapture + 2 : 1,
+                                   juce::dontSendNotification);
+            capture.onChange = [this] { capture.setTooltip (capture.getText()); };
+            capture.setTooltip (capture.getText());
+            addAndMakeVisible (capture);
+
+            configureLabel (directionLabel, L10n::tr ("Direzione", "Direction"));
+            addAndMakeVisible (directionLabel);
+            refreshDirectionItems (initialBidirectional);
+            addAndMakeVisible (direction);
+
+            hint.setColour (juce::Label::textColourId, Palette::muted);
+            hint.setFont (juce::FontOptions (12.5f));
+            hint.setJustificationType (juce::Justification::topLeft);
+            hint.setMinimumHorizontalScale (0.85f);
+            addAndMakeVisible (hint);
+
+            start.setButtonText (L10n::tr ("Avvia", "Start"));
+            cancel.setButtonText (L10n::tr ("Annulla", "Cancel"));
+            start.addShortcut (juce::KeyPress (juce::KeyPress::returnKey));
+            start.onClick = [this]
+            {
+                if (onAccept != nullptr)
+                    onAccept();
+                closeDialog (true);
+            };
+            cancel.onClick = [this] { closeDialog (false); };
+            addAndMakeVisible (start);
+            addAndMakeVisible (cancel);
+
+            setSize (620, layoutHeight());
+            updateMode();
+        }
+
+        // Called by the owner once the user presses Start; the values below are
+        // still readable while the callback runs (the dialog closes afterwards).
+        std::function<void()> onAccept;
+
+        bool isWindowsEndpointMode() const { return mode.getSelectedId() == 2; }
+        juce::String getDriver() const { return driver.getText().trim(); }
+        int getChannel() const { return juce::jlimit (1, 128, channel.getText().getIntValue()); }
+        int getNlEndpointIndex() const
+        {
+            return juce::jlimit (0, 3, nlEndpoint.getSelectedId() - 1);
+        }
+        bool getBidirectional() const { return direction.getSelectedId() == 2; }
+        juce::String getRenderEndpoint() const
+        {
+            return renderNames.isEmpty() ? juce::String() : render.getText().trim();
+        }
+        juce::String getCaptureEndpoint() const
+        {
+            return capture.getSelectedId() > 1 ? capture.getText().trim() : juce::String();
+        }
+
+        void resized() override
+        {
+            auto area = getLocalBounds().reduced (margin);
+            auto place = [&area] (juce::Label& label, juce::Component& control,
+                                  int controlWidth)
+            {
+                auto row = area.removeFromTop (rowHeight);
+                label.setBounds (row.removeFromLeft (juce::jmin (labelWidth,
+                                                                 row.getWidth() / 2)));
+                row.removeFromLeft (6);
+                if (controlWidth > 0)
+                    control.setBounds (row.removeFromLeft (juce::jmin (controlWidth,
+                                                                       row.getWidth())));
+                else
+                    control.setBounds (row);
+                area.removeFromTop (rowGap);
+            };
+
+            place (modeLabel, mode, -1);
+            hint.setBounds (area.removeFromTop (hintHeight));
+            area.removeFromTop (rowGap);
+            place (driverLabel, driver, -1);
+            place (channelLabel, channel, 110);
+            if (isWindowsEndpointMode())
+            {
+                place (renderLabel, render, -1);
+                place (captureLabel, capture, -1);
+            }
+            else
+            {
+                place (nlEndpointLabel, nlEndpoint, -1);
+            }
+            place (directionLabel, direction, -1);
+            auto buttons = area.removeFromTop (34);
+            cancel.setBounds (buttons.removeFromRight (110));
+            buttons.removeFromRight (8);
+            start.setBounds (buttons.removeFromRight (110));
+        }
+
+    private:
+        static constexpr int rowHeight = 30;
+        static constexpr int rowGap = 8;
+        static constexpr int labelWidth = 178;
+        static constexpr int margin = 16;
+        static constexpr int hintHeight = 46;
+
+        static void configureLabel (juce::Label& label, const juce::String& text)
+        {
+            label.setText (text, juce::dontSendNotification);
+            label.setColour (juce::Label::textColourId, Palette::text.withAlpha (0.82f));
+            label.setFont (juce::FontOptions (13.0f));
+            label.setJustificationType (juce::Justification::centredLeft);
+            label.setMinimumHorizontalScale (0.85f);
+        }
+
+        void refreshDirectionItems (bool bidirectional)
+        {
+            direction.clear (juce::dontSendNotification);
+            if (isWindowsEndpointMode())
+            {
+                direction.addItem (L10n::tr ("Solo andata: ASIO -> endpoint render",
+                                             "Forward only: ASIO -> render endpoint"), 1);
+                direction.addItem (L10n::tr ("Bidirezionale: + ritorno -> ASIO out",
+                                             "Bidirectional: + return -> ASIO out"), 2);
+            }
+            else
+            {
+                direction.addItem (L10n::tr ("Solo andata: ASIO -> NL Mic",
+                                             "Forward only: ASIO -> NL Mic"), 1);
+                direction.addItem (L10n::tr ("Bidirezionale: + NL Return -> ASIO out",
+                                             "Bidirectional: + NL Return -> ASIO out"), 2);
+            }
+            direction.setSelectedId (bidirectional ? 2 : 1, juce::dontSendNotification);
+        }
+
+        void updateMode()
+        {
+            const bool windows = isWindowsEndpointMode();
+            nlEndpointLabel.setVisible (! windows);
+            nlEndpoint.setVisible (! windows);
+            renderLabel.setVisible (windows);
+            render.setVisible (windows);
+            captureLabel.setVisible (windows);
+            capture.setVisible (windows);
+            hint.setText (windows
+                              ? L10n::tr ("Percorso utente: uscita su un endpoint Windows già firmato "
+                                          "(cavo virtuale o hardware). Nessun driver NL e nessun "
+                                          "TESTSIGNING. Il ritorno può usare un endpoint capture o il "
+                                          "loopback del render.",
+                                          "User path: output to an already-signed Windows endpoint "
+                                          "(virtual cable or hardware). No NL driver and no "
+                                          "TESTSIGNING. The return can use a capture endpoint or the "
+                                          "render loopback.")
+                              : L10n::tr ("Percorso driver: uscita su un NL Mic pubblicato dal driver "
+                                          "NL MatrixAudio (richiede il driver e TESTSIGNING).",
+                                          "Driver path: output to an NL Mic endpoint published by the "
+                                          "NL MatrixAudio driver (requires the driver and TESTSIGNING)."),
+                          juce::dontSendNotification);
+            refreshDirectionItems (direction.getSelectedId() == 2);
+            const int height = layoutHeight();
+            if (getHeight() != height)
+                setSize (juce::jmax (420, getWidth()), height);
+            resized();
+        }
+
+        int layoutHeight() const
+        {
+            int h = margin * 2;
+            h += rowHeight + rowGap;            // mode
+            h += hintHeight + rowGap;           // explanation
+            h += (rowHeight + rowGap) * 2;      // ASIO device + channel
+            h += (rowHeight + rowGap) * (isWindowsEndpointMode() ? 2 : 1); // endpoint rows
+            h += rowHeight + rowGap;            // direction
+            h += 34;                            // buttons
+            return h;
+        }
+
+        void closeDialog (bool acceptedResult)
+        {
+            if (auto* window = findParentComponentOfClass<juce::DialogWindow>())
+                window->exitModalState (acceptedResult ? 1 : 0);
+        }
+
+        juce::StringArray renderNames, captureNames;
+        juce::ComboBox mode, driver, nlEndpoint, render, capture, direction;
+        juce::Label modeLabel, driverLabel, channelLabel, nlEndpointLabel, renderLabel,
+                    captureLabel, directionLabel, hint;
+        juce::TextEditor channel;
+        juce::TextButton start, cancel;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (QuickConnectDialogComponent)
+    };
+
     class MainComponent final : public juce::Component, private juce::Timer
     {
     public:
         // User/CLI-visible Quick Connect selection: which ASIO device, which
-        // single channel (1-based) and which NL Mic endpoint it feeds.
+        // single channel (1-based) and where the send leg goes.  Two wiring
+        // modes exist:
+        //  * NL driver endpoints (default, unchanged): the send leg is an NL Mic
+        //    published by the NLMatrixAudio kernel driver;
+        //  * Windows endpoints (user-mode): the send leg is an already-signed
+        //    Windows render endpoint (a virtual cable or real hardware), so the
+        //    product works on a normal Windows 11 PC without TESTSIGNING and
+        //    without the NL driver.
         struct QuickConnectChoice
         {
             juce::String driver;
@@ -3572,6 +4044,10 @@ namespace
             int endpointIndex = 0; // virtual endpoint: 0 = NL Mic 1
             bool bidirectional = false;
             bool testTone = false;
+            // Windows-endpoint (user-mode) path.
+            bool useWindowsEndpoint = false;
+            juce::String renderEndpoint;  // send leg: Windows render endpoint
+            juce::String captureEndpoint; // return leg; empty => loopback of renderEndpoint
         };
 
         MainComponent()
@@ -3628,7 +4104,7 @@ namespace
             // devices/formats, mixer and diagnostics move into clearly
             // distinguishable, on-demand sections instead of occupying the
             // main screen permanently.
-            for (auto* chip : { &sectionRouting, &sectionStudio, &sectionMixer, &sectionQuickConnect, &sectionDevices, &sectionDiagnostics })
+            for (auto* chip : { &sectionRouting, &sectionStudio, &sectionMixer, &sectionDevices, &sectionDiagnostics })
             {
                 addAndMakeVisible (*chip);
                 chip->setColour (juce::TextButton::buttonColourId, Palette::panelRaised);
@@ -3639,7 +4115,6 @@ namespace
             sectionMixer.setButtonText (L10n::tr ("Mixer", "Mixer"));
             sectionDevices.setButtonText (L10n::tr ("Dispositivi", "Devices"));
             sectionDiagnostics.setButtonText (L10n::tr ("Diagnostica", "Diagnostics"));
-            sectionQuickConnect.setButtonText ("Quick Connect");
             sectionRouting.setConnectedEdges (juce::Button::ConnectedOnLeft);
             sectionDevices.setConnectedEdges (juce::Button::ConnectedOnRight);
             sectionRouting.setToggleState (true, juce::dontSendNotification);
@@ -3652,7 +4127,61 @@ namespace
             sectionMixer.onClick = [this] { openMixer(); };
             sectionDevices.onClick = [this] { setDevicesPanelVisible (! devicesPanelVisible); };
             sectionDiagnostics.onClick = [this] { openDiagnostics(); };
-            sectionQuickConnect.onClick = [this] { showQuickConnectDialog(); };
+
+            // Quick Connect is an action, not a section: it used to occupy a
+            // permanent slot in the section strip, which the user found
+            // intrusive.  It now lives as a compact toolbar button in the top
+            // action row and opens exactly the same dialog.
+            addAndMakeVisible (quickConnectButton);
+            quickConnectButton.setButtonText (L10n::tr ("Quick Connect", "Quick Connect"));
+            quickConnectButton.setTooltip (L10n::tr (
+                "Crea al volo il routing minimo (ASIO -> endpoint NL o endpoint Windows già firmato). "
+                "Il preset Quick Connect non sovrascrive i profili Studio.",
+                "Builds the minimal routing on the fly (ASIO -> NL endpoint or already-signed "
+                "Windows endpoint). The Quick Connect preset never overwrites Studio profiles."));
+            quickConnectButton.onClick = [this] { showQuickConnectDialog(); };
+
+            // Draggable dividers between the left lists, the patchbay and the
+            // right column: the panes are resizable, the widths are clamped so
+            // the layout stays valid at every window size.
+            addAndMakeVisible (leftPaneResizer);
+            addAndMakeVisible (rightPaneResizer);
+            leftPaneResizer.onDragDelta = [this] (int delta)
+            {
+                leftPanelWidthPref = juce::jlimit (300, juce::jmax (300, maxLeftPaneWidth()),
+                                                   lastLeftPanelWidth + delta);
+                resized();
+            };
+            rightPaneResizer.onDragDelta = [this] (int delta)
+            {
+                rightPanelWidthPref = juce::jlimit (220, juce::jmax (220, maxRightPaneWidth()),
+                                                    lastRightPanelWidth - delta);
+                resized();
+            };
+
+            // The meters panel can be detached into its own window (reusing
+            // MeterPanel unchanged); the main window then gives its space back
+            // to the connections list until the window is closed.
+            addAndMakeVisible (metersDetachButton);
+            metersDetachButton.setButtonText (L10n::tr ("Stacca", "Detach"));
+            metersDetachButton.setTooltip (L10n::tr ("Apri i misuratori in una finestra separata",
+                                                     "Open the meters in a separate window"));
+            metersDetachButton.onClick = [this]
+            {
+                if (detachedMetersWindow != nullptr)
+                {
+                    detachedMetersWindow->toFront (true);
+                    return;
+                }
+                detachedMetersWindow = new DetachedMetersWindow (
+                    [safe = juce::Component::SafePointer<MainComponent> (this)]
+                    {
+                        if (safe != nullptr)
+                            safe->metersWindowClosed();
+                    });
+                detachedMetersWindow->setRows (lastMeterRows);
+                resized();
+            };
 
             addAndMakeVisible (statusBar);
             statusBar.onClick = [this] { setDevicesPanelVisible (true); };
@@ -4191,6 +4720,11 @@ namespace
         {
             stopTimer();
             stopRouter();
+            if (detachedMetersWindow != nullptr)
+            {
+                delete detachedMetersWindow;
+                detachedMetersWindow = nullptr;
+            }
             if (&juce::LookAndFeel::getDefaultLookAndFeel() == &lookAndFeel)
                 juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
             setLookAndFeel (nullptr);
@@ -5282,6 +5816,9 @@ namespace
                 const auto savedQcChannel = qcChannel1;
                 const auto savedQcEndpoint = qcEndpoint;
                 const auto savedQcBidirectional = qcBidirectional;
+                const auto savedQcUseWindowsEndpoint = qcUseWindowsEndpoint;
+                const auto savedQcRenderEndpoint = qcRenderEndpoint;
+                const auto savedQcCaptureEndpoint = qcCaptureEndpoint;
                 const auto savedAsioForQc = asioBox.getText();
                 const auto savedProfileNameForQc = profileName.getText();
                 const auto savedCurrentProfileForQc = currentProfileFile;
@@ -5339,6 +5876,47 @@ namespace
                 }
                 check (reverseOk, "quick connect bidirectional adds NL Return -> ASIO out");
 
+                // User-mode endpoint path: the send leg is an already-signed
+                // Windows render endpoint instead of an NL driver endpoint.
+                // The generated model must never contain a route from the
+                // return source into the send destination (that would be a
+                // feedback loop), and the send destination must exclude the
+                // return source explicitly through mix-minus.
+                choice.channel1 = 2;
+                choice.bidirectional = true;
+                choice.testTone = true;
+                choice.useWindowsEndpoint = true;
+                // Neutral fixture names: the self-test never opens these
+                // endpoints, it only checks the generated model.
+                choice.renderEndpoint = "Selftest Windows Render";
+                choice.captureEndpoint = "Selftest Windows Capture";
+                quickConnectWith (choice, false);
+                bool endpointSendOk = false, endpointReturnOk = false;
+                bool noFeedbackRoute = false, returnExcluded = false;
+                if (destinations.size() == 2 && sources.size() == 2)
+                {
+                    const auto& qcSendDestination = destinations.front();
+                    const auto& qcReturnSource = sources.back();
+                    endpointSendOk = qcSendDestination.type == "render"
+                                     && qcSendDestination.endpoint == choice.renderEndpoint
+                                     && qcSendDestination.channels == std::vector<int> { 0, 1 }
+                                     && sources.front().channels
+                                            == std::vector<int> { choice.channel1 - 1 };
+                    endpointReturnOk = qcReturnSource.type == "capture"
+                                       && qcReturnSource.endpoint == choice.captureEndpoint
+                                       && destinations.back().type == "asio-out"
+                                       && destinations.back().channels == std::vector<int> { 0, 1 };
+                    noFeedbackRoute = routes.size() == 2;
+                    for (const auto& r : routes)
+                        if (r.sourceId == qcReturnSource.id
+                            && r.destinationId == qcSendDestination.id)
+                            noFeedbackRoute = false;
+                    returnExcluded = ! qcSendDestination.mixMinus.empty()
+                                     && qcSendDestination.mixMinus.front() == qcReturnSource.id;
+                }
+                check (endpointSendOk && endpointReturnOk && noFeedbackRoute && returnExcluded,
+                       "quick connect Windows endpoint mode builds send + return without feedback");
+
                 restoreStudioSession();
                 check (! liveProjectIsQuickConnect && (int) sources.size() == studioSourceCount,
                        "restore Studio session brings the Studio project back");
@@ -5349,6 +5927,9 @@ namespace
                 qcChannel1 = savedQcChannel;
                 qcEndpoint = savedQcEndpoint;
                 qcBidirectional = savedQcBidirectional;
+                qcUseWindowsEndpoint = savedQcUseWindowsEndpoint;
+                qcRenderEndpoint = savedQcRenderEndpoint;
+                qcCaptureEndpoint = savedQcCaptureEndpoint;
                 asioBox.setText (savedAsioForQc, juce::dontSendNotification);
                 profileName.setText (savedProfileNameForQc, juce::dontSendNotification);
                 currentProfileFile = savedCurrentProfileForQc;
@@ -5605,11 +6186,11 @@ namespace
                  + "quick connect project model");
 
             // The preset on disk must carry exactly the device, channel and
-            // endpoint the user (or the CLI test) selected.
+            // destination the user (or the CLI test) selected.
             {
                 const auto parsed = juce::JSON::parse (preset);
                 bool presetOk = false;
-                juce::String presetAsio;
+                juce::String presetAsio, presetDestinationType, presetEndpointName;
                 int presetChannel = -1, presetEndpoint = -1;
                 if (auto* root = parsed.getDynamicObject())
                 {
@@ -5624,15 +6205,33 @@ namespace
                         }
                     if (auto* list = root->getProperty ("destinations").getArray())
                         if (auto* first = list->getFirst().getDynamicObject())
+                        {
                             presetEndpoint = (int) first->getProperty ("driverEndpoint");
+                            presetDestinationType = first->getProperty ("type").toString();
+                            presetEndpointName = first->getProperty ("endpoint").toString();
+                        }
                 }
                 const auto wantedAsio = choice.testTone ? asioBox.getText().trim()
                                                         : choice.driver.trim();
-                presetOk = (wantedAsio.isEmpty() || presetAsio == wantedAsio)
-                           && presetChannel == choice.channel1 - 1
-                           && presetEndpoint == choice.endpointIndex;
+                if (choice.useWindowsEndpoint)
+                {
+                    // Endpoint mode: the send leg is a Windows render endpoint,
+                    // not an NL Mic index, so the preset must name it.
+                    presetOk = (wantedAsio.isEmpty() || presetAsio == wantedAsio)
+                               && presetChannel == choice.channel1 - 1
+                               && presetDestinationType == "render"
+                               && presetEndpointName == choice.renderEndpoint;
+                }
+                else
+                {
+                    presetOk = (wantedAsio.isEmpty() || presetAsio == wantedAsio)
+                               && presetChannel == choice.channel1 - 1
+                               && presetEndpoint == choice.endpointIndex;
+                }
                 log ("PRESET asio=" + presetAsio + " channel0=" + juce::String (presetChannel)
-                     + " endpoint0=" + juce::String (presetEndpoint));
+                     + " endpoint0=" + juce::String (presetEndpoint)
+                     + " dest=" + presetDestinationType
+                     + " endpointName=" + presetEndpointName);
                 log (juce::String (presetOk ? "PASS " : "FAIL ")
                      + "quick connect preset carries the selected device and channel");
             }
@@ -6337,7 +6936,15 @@ namespace
             // G2: obvious collapse/expand arrow for the whole left panel.
             leftPanelArrow.setBounds (topRow.removeFromLeft (compact ? 26 : 28));
             top.removeFromTop (4);
-            statusLabel.setBounds (top.removeFromTop (32));
+            {
+                // Quick Connect sits with the status/toolbar row, not in the
+                // permanent section strip: it is a one-shot action that opens
+                // its own dialog.
+                auto statusRow = top.removeFromTop (32);
+                quickConnectButton.setBounds (statusRow.removeFromRight (compact ? 112 : 130));
+                statusRow.removeFromRight (6);
+                statusLabel.setBounds (statusRow);
+            }
             top.removeFromTop (4);
             audioBar.setBounds (top.removeFromTop (barHeight));
             if (barHeight > 0)
@@ -6347,7 +6954,6 @@ namespace
             sectionRouting.setBounds (chipRow.removeFromLeft (chipWidth));
             sectionStudio.setBounds (chipRow.removeFromLeft (chipWidth));
             sectionMixer.setBounds (chipRow.removeFromLeft (chipWidth));
-            sectionQuickConnect.setBounds (chipRow.removeFromLeft (chipWidth + 20));
             sectionDevices.setBounds (chipRow.removeFromLeft (chipWidth));
             sectionDiagnostics.setBounds (chipRow.removeFromLeft (chipWidth + 4));
 
@@ -6366,11 +6972,37 @@ namespace
                 mixerResizer.toFront (false);
             }
 
-            const int rightWidth = juce::jlimit (250, 340, area.getWidth() / 4);
+            // Right column (meters + connections), with a draggable divider
+            // between it and the patchbay: splitter width, clamped so the
+            // patchbay keeps a usable minimum.
+            const int rightWidth = rightPanelWidthPref > 0
+                                       ? juce::jlimit (220, juce::jmax (220, maxRightPaneWidth()),
+                                                       rightPanelWidthPref)
+                                       : juce::jlimit (250, 340, area.getWidth() / 4);
+            lastRightPanelWidth = rightWidth;
             auto right = area.removeFromRight (rightWidth);
-            auto meterArea = right.removeFromTop (juce::jlimit (200, 330, right.getHeight() / 2));
-            metersTitle.setBounds (meterArea.removeFromTop (26));
-            metersPanel.setBounds (meterArea.reduced (2));
+            rightPaneResizer.setVisible (true);
+            rightPaneResizer.setBounds (area.removeFromRight (8));
+            if (detachedMetersWindow == nullptr)
+            {
+                auto meterArea = right.removeFromTop (juce::jlimit (200, 330, right.getHeight() / 2));
+                auto meterTitleRow = meterArea.removeFromTop (26);
+                metersDetachButton.setBounds (meterTitleRow.removeFromRight (
+                    juce::jmin (78, juce::jmax (0, meterTitleRow.getWidth() - 80))));
+                meterTitleRow.removeFromRight (6);
+                metersTitle.setBounds (meterTitleRow);
+                metersPanel.setBounds (meterArea.reduced (2));
+                metersTitle.setVisible (true);
+                metersDetachButton.setVisible (true);
+                metersPanel.setVisible (true);
+            }
+            else
+            {
+                // Detached: the connections list gets the freed space back.
+                metersTitle.setVisible (false);
+                metersDetachButton.setVisible (false);
+                metersPanel.setVisible (false);
+            }
             right.removeFromTop (6);
             routeTitle.setText (L10n::tr ("Connessioni"), juce::dontSendNotification);
             routeTitle.setVisible (true);
@@ -6380,9 +7012,20 @@ namespace
             routeList.setVisible (true);
             routeList.setBounds (right);
 
+            // Left column (sources / destinations / buses) with its own
+            // draggable divider; collapsed it stays a slim rail with no divider.
             const int expandedLeftWidth = juce::jlimit (310, 450, area.getWidth() * 37 / 100);
-            const int leftWidth = leftPanelCollapsed ? 26 : expandedLeftWidth;
+            const int leftWidth = leftPanelCollapsed
+                                      ? 26
+                                      : (leftPanelWidthPref > 0
+                                             ? juce::jlimit (300, juce::jmax (300, maxLeftPaneWidth()),
+                                                             leftPanelWidthPref)
+                                             : expandedLeftWidth);
+            lastLeftPanelWidth = leftWidth;
             auto leftArea = area.removeFromLeft (leftWidth);
+            leftPaneResizer.setVisible (! leftPanelCollapsed);
+            if (! leftPanelCollapsed)
+                leftPaneResizer.setBounds (area.removeFromLeft (8));
             leftViewport.setVisible (! leftPanelCollapsed);
             if (leftPanelCollapsed)
             {
@@ -8040,6 +8683,8 @@ namespace
             // The status line is transient: translate the initial text once instead
             // of rebinding it, so a language switch never wipes the last message.
             statusLabel.setText (L10n::tr ("Pronto"), juce::dontSendNotification);
+            L10n::bindButtonText (quickConnectButton, "Quick Connect");
+            L10n::bindButtonText (metersDetachButton, "Stacca");
             L10n::bindButtonText (applyButton, "Applica live");
             L10n::bindButtonText (saveButton, "Salva profilo...");
             L10n::bindButtonText (loadButton, "Carica profilo...");
@@ -8260,11 +8905,78 @@ namespace
             statusLabel.setText (text, juce::dontSendNotification);
         }
 
+        // ---- Pane resizing + detached metres -------------------------------
+        static constexpr int minPatchbayWidth = 220;
+
+        int panesAvailableWidth() const { return juce::jmax (0, getWidth() - 20); }
+
+        int maxLeftPaneWidth() const
+        {
+            const int available = panesAvailableWidth();
+            const int right = lastRightPanelWidth > 0
+                                  ? lastRightPanelWidth
+                                  : juce::jlimit (250, 340, available / 4);
+            return available - right - 16 - minPatchbayWidth;
+        }
+
+        int maxRightPaneWidth() const
+        {
+            const int available = panesAvailableWidth();
+            const int left = leftPanelCollapsed
+                                 ? 26
+                                 : (lastLeftPanelWidth > 0
+                                        ? lastLeftPanelWidth
+                                        : juce::jlimit (310, 450, available * 37 / 100));
+            return available - left - 16 - minPatchbayWidth;
+        }
+
+        void metersWindowClosed()
+        {
+            detachedMetersWindow = nullptr;
+            resized();
+        }
+
+        // Read-only inventory of the WASAPI endpoints the engine can route to
+        // and from, probed on demand (Devices section) with their channel
+        // counts.  They stay out of devices[] on purpose: they are not ASIO
+        // devices and the graph keeps referencing them from sources/destinations.
+        void refreshWindowsEndpointInventory()
+        {
+            std::vector<AudioFormatBar::WindowsEndpoint> endpoints;
+            if (auto wt = std::unique_ptr<juce::AudioIODeviceType> (
+                    juce::AudioIODeviceType::createAudioIODeviceType_WASAPI (
+                        juce::WASAPIDeviceMode::shared)))
+            {
+                wt->scanForDevices();
+                for (const auto& name : wt->getDeviceNames (false))
+                {
+                    AudioFormatBar::WindowsEndpoint endpoint;
+                    endpoint.name = name;
+                    endpoint.capture = false;
+                    if (std::unique_ptr<juce::AudioIODevice> device { wt->createDevice (name, {}) })
+                        endpoint.channels = device->getOutputChannelNames().size();
+                    endpoints.push_back (endpoint);
+                }
+                for (const auto& name : wt->getDeviceNames (true))
+                {
+                    AudioFormatBar::WindowsEndpoint endpoint;
+                    endpoint.name = name;
+                    endpoint.capture = true;
+                    if (std::unique_ptr<juce::AudioIODevice> device { wt->createDevice ({}, name) })
+                        endpoint.channels = device->getInputChannelNames().size();
+                    endpoints.push_back (endpoint);
+                }
+            }
+            audioBar.setWindowsEndpoints (std::move (endpoints));
+        }
+
         // ---- Section surface + engine status ---------------------------------
         void setDevicesPanelVisible (bool visible)
         {
             devicesPanelVisible = visible;
             audioBar.setVisible (visible);
+            if (visible)
+                refreshWindowsEndpointInventory();
             sectionDevices.setToggleState (visible, juce::dontSendNotification);
             savePreferences();
             resized();
@@ -8688,15 +9400,23 @@ namespace
             }
 
             wasapiEndpoints.clear();
+            wasapiRenderEndpoints.clear();
+            wasapiCaptureEndpoints.clear();
             if (auto wt = std::unique_ptr<juce::AudioIODeviceType> (
                     juce::AudioIODeviceType::createAudioIODeviceType_WASAPI (
                         juce::WASAPIDeviceMode::shared)))
             {
                 wt->scanForDevices();
                 for (const auto& n : wt->getDeviceNames (false))
+                {
                     wasapiEndpoints.add (n);
+                    wasapiRenderEndpoints.add (n);
+                }
                 for (const auto& n : wt->getDeviceNames (true))
+                {
                     wasapiEndpoints.add (n);
+                    wasapiCaptureEndpoints.add (n);
+                }
             }
 
             sourceEndpoint.clear();
@@ -8713,6 +9433,8 @@ namespace
             }
             // C16: the extra-device rows follow the enumerated ASIO drivers.
             refreshAudioBar();
+            if (devicesPanelVisible)
+                refreshWindowsEndpointInventory();
         }
 
         //======================================================================
@@ -10155,6 +10877,10 @@ namespace
         int qcChannel1 = 1;
         int qcEndpoint = 0;
         bool qcBidirectional = false;
+        // Last Quick Connect wiring mode + Windows endpoints, used as the
+        // dialog defaults.  Runtime-only: the preferences format is unchanged.
+        bool qcUseWindowsEndpoint = false;
+        juce::String qcRenderEndpoint, qcCaptureEndpoint;
 
         juce::File quickConnectPresetDir() const
         {
@@ -10178,9 +10904,26 @@ namespace
 
         juce::String describeQuickConnect (const QuickConnectChoice& c) const
         {
-            juce::String text = (c.testTone ? juce::String ("Test tone 1 kHz")
-                                            : juce::String ("ASIO canale ") + juce::String (c.channel1))
-                                + " -> NL Mic " + juce::String (c.endpointIndex + 1);
+            const juce::String source = c.testTone ? juce::String ("Test tone 1 kHz")
+                                                   : juce::String ("ASIO canale ")
+                                                         + juce::String (c.channel1);
+            if (c.useWindowsEndpoint)
+            {
+                // Name the mode explicitly: the operator must be able to tell a
+                // user-mode Windows-endpoint session from an NL driver one.
+                juce::String text = source + " -> Windows endpoint: " + c.renderEndpoint;
+                if (c.bidirectional)
+                {
+                    const bool captureReturn = c.captureEndpoint.isNotEmpty();
+                    text << " + "
+                         << (captureReturn ? L10n::tr ("cattura ", "capture ")
+                                           : L10n::tr ("loopback ", "loopback "))
+                         << (captureReturn ? c.captureEndpoint : c.renderEndpoint)
+                         << " -> ASIO out";
+                }
+                return text;
+            }
+            juce::String text = source + " -> NL Mic " + juce::String (c.endpointIndex + 1);
             if (c.bidirectional)
                 text << " + NL Return " << juce::String (c.endpointIndex + 1) << " -> ASIO out";
             return text;
@@ -10237,13 +10980,21 @@ namespace
         }
 
         // Quick Connect: the user-facing, OBS-free path requested for everyday
-        // sessions.  It builds the smallest runnable project (one ASIO channel ->
-        // an NL Mic), optionally the reverse path (NL Return -> ASIO output),
-        // stores it as its own preset and starts the engine.
+        // sessions.  It builds the smallest runnable project and stores it as its
+        // own preset.  Two wiring modes:
+        //  * NL driver (default, unchanged): one ASIO channel -> an NL Mic,
+        //    optionally NL Return -> ASIO output;
+        //  * Windows endpoints (user-mode): the same ASIO channel (or the test
+        //    tone) -> an already-signed Windows render endpoint, optionally a
+        //    capture endpoint (or the render loopback) -> ASIO output.  Only the
+        //    source needs an ASIO driver here; the destination is a normal
+        //    Windows endpoint, so no driver and no TESTSIGNING are involved.
         void quickConnectWith (QuickConnectChoice choice, bool startEngine = true)
         {
             choice.channel1 = juce::jlimit (1, 128, choice.channel1);
             choice.endpointIndex = juce::jlimit (0, 3, choice.endpointIndex);
+            choice.renderEndpoint = choice.renderEndpoint.trim();
+            choice.captureEndpoint = choice.captureEndpoint.trim();
             const auto driver = choice.driver.trim().isNotEmpty()
                                     ? choice.driver.trim() : asioBox.getText().trim();
             if (! choice.testTone && driver.isEmpty())
@@ -10256,6 +11007,15 @@ namespace
             {
                 setStatus (L10n::tr ("Quick Connect: driver ASIO non disponibile: ",
                                      "Quick Connect: ASIO driver not available: ") + driver);
+                return;
+            }
+            if (choice.useWindowsEndpoint && choice.renderEndpoint.isEmpty())
+            {
+                setStatus (L10n::tr ("Quick Connect: seleziona un endpoint render Windows "
+                                     "per l'uscita: senza endpoint il motore non può aprire "
+                                     "la destinazione",
+                                     "Quick Connect: select a Windows render endpoint for the "
+                                     "output: the engine cannot open the destination without one"));
                 return;
             }
 
@@ -10288,12 +11048,25 @@ namespace
 
             Destination dst;
             dst.id = "qc-dst";
-            dst.name = "NL Mic " + juce::String (choice.endpointIndex + 1);
-            dst.type = "driver";
-            dst.driverEndpoint = choice.endpointIndex;
-            dst.channels = { 0 };
             dst.x = 640.0f;
             dst.y = 220.0f;
+            if (choice.useWindowsEndpoint)
+            {
+                // User-mode send leg: an already-signed Windows render endpoint
+                // (virtual cable or real hardware).  Two channels are the base
+                // case; the engine supports more, Quick Connect does not force it.
+                dst.name = choice.renderEndpoint;
+                dst.type = "render";
+                dst.endpoint = choice.renderEndpoint;
+                dst.channels = { 0, 1 };
+            }
+            else
+            {
+                dst.name = "NL Mic " + juce::String (choice.endpointIndex + 1);
+                dst.type = "driver";
+                dst.driverEndpoint = choice.endpointIndex;
+                dst.channels = { 0 };
+            }
             destinations.push_back (dst);
 
             Route route;
@@ -10305,12 +11078,33 @@ namespace
             {
                 Source ret;
                 ret.id = "qc-ret";
-                ret.name = "NL Return " + juce::String (choice.endpointIndex + 1);
-                ret.type = "loopback";
-                ret.endpoint = ret.name;
                 ret.channels = { 0, 1 };
                 ret.x = 120.0f;
                 ret.y = 380.0f;
+                if (choice.useWindowsEndpoint)
+                {
+                    // Return leg: a real capture endpoint when the user picked
+                    // one, otherwise the loopback of the render endpoint.
+                    if (choice.captureEndpoint.isNotEmpty())
+                    {
+                        ret.type = "capture";
+                        ret.endpoint = choice.captureEndpoint;
+                        ret.name = L10n::tr ("Cattura: ", "Capture: ") + choice.captureEndpoint;
+                    }
+                    else
+                    {
+                        ret.type = "loopback";
+                        ret.endpoint = choice.renderEndpoint;
+                        ret.name = L10n::tr ("Loopback: ", "Loopback: ")
+                                   + choice.renderEndpoint;
+                    }
+                }
+                else
+                {
+                    ret.name = "NL Return " + juce::String (choice.endpointIndex + 1);
+                    ret.type = "loopback";
+                    ret.endpoint = ret.name;
+                }
                 sources.push_back (ret);
 
                 Destination out;
@@ -10326,6 +11120,15 @@ namespace
                 reverse.sourceId = ret.id;
                 reverse.destinationId = out.id;
                 routes.push_back (reverse);
+
+                if (choice.useWindowsEndpoint)
+                {
+                    // Anti-feedback guard: the send destination explicitly
+                    // excludes the return source.  No route is created from the
+                    // return source into the send endpoint either, so remote
+                    // audio can never be sent back to the remote application.
+                    destinations.front().mixMinus.push_back (ret.id);
+                }
             }
 
             profileName.setText ("Quick Connect", juce::dontSendNotification);
@@ -10338,6 +11141,9 @@ namespace
             qcChannel1 = choice.channel1;
             qcEndpoint = choice.endpointIndex;
             qcBidirectional = choice.bidirectional;
+            qcUseWindowsEndpoint = choice.useWindowsEndpoint;
+            qcRenderEndpoint = choice.renderEndpoint;
+            qcCaptureEndpoint = choice.captureEndpoint;
             patchbay.clearSelection();
             refreshAll();
 
@@ -10385,49 +11191,42 @@ namespace
             }
             const auto currentDriver = qcDriver.isNotEmpty() && drivers.contains (qcDriver)
                                            ? qcDriver : drivers[0];
-            auto* window = new juce::AlertWindow (
-                L10n::tr ("Quick Connect", "Quick Connect"),
-                L10n::tr ("Scegli dispositivo ASIO, canale e endpoint. Il preset Quick Connect "
-                          "non sovrascrive i profili Studio.",
-                          "Choose ASIO device, channel and endpoint. The Quick Connect preset "
-                          "never overwrites Studio profiles."),
-                juce::MessageBoxIconType::NoIcon);
-            window->addComboBox ("device", drivers, currentDriver);
-            window->addTextEditor ("channel", juce::String (juce::jmax (1, qcChannel1)),
-                                   L10n::tr ("Canale ASIO (1 = primo canale)",
-                                             "ASIO channel (1 = first channel)"));
-            juce::StringArray endpoints;
-            for (int i = 1; i <= 4; ++i)
-                endpoints.add ("NL Mic " + juce::String (i));
-            window->addComboBox ("endpoint", endpoints,
-                                 endpoints[juce::jlimit (0, 3, qcEndpoint)]);
-            juce::StringArray directions;
-            directions.add (L10n::tr ("Solo andata: ASIO -> NL Mic",
-                                      "Forward only: ASIO -> NL Mic"));
-            directions.add (L10n::tr ("Bidirezionale: + NL Return -> ASIO out",
-                                      "Bidirectional: + NL Return -> ASIO out"));
-            window->addComboBox ("direction", directions, directions[qcBidirectional ? 1 : 0]);
-            window->addButton (L10n::tr ("Avvia", "Start"), 1,
-                               juce::KeyPress (juce::KeyPress::returnKey));
-            window->addButton (L10n::tr ("Annulla", "Cancel"), 0,
-                               juce::KeyPress (juce::KeyPress::escapeKey));
+
+            // The dialog itself decides which rows are visible, so the mode
+            // selector can hide the NL driver controls or the Windows endpoint
+            // controls without leaving dead space in the window.
+            auto* content = new QuickConnectDialogComponent (drivers,
+                                                             wasapiRenderEndpoints,
+                                                             wasapiCaptureEndpoints,
+                                                             currentDriver, qcChannel1,
+                                                             qcEndpoint, qcBidirectional,
+                                                             qcUseWindowsEndpoint,
+                                                             qcRenderEndpoint, qcCaptureEndpoint);
             juce::Component::SafePointer<MainComponent> safe (this);
-            window->enterModalState (true, juce::ModalCallbackFunction::create (
-                [safe, window] (int result)
-                {
-                    if (result != 1 || safe == nullptr)
-                        return;
-                    QuickConnectChoice choice;
-                    if (auto* device = window->getComboBoxComponent ("device"))
-                        choice.driver = device->getText().trim();
-                    if (auto* endpoint = window->getComboBoxComponent ("endpoint"))
-                        choice.endpointIndex = juce::jlimit (0, 3, endpoint->getSelectedItemIndex());
-                    if (auto* direction = window->getComboBoxComponent ("direction"))
-                        choice.bidirectional = direction->getSelectedItemIndex() == 1;
-                    choice.channel1 = juce::jlimit (1, 128,
-                                                    window->getTextEditorContents ("channel").getIntValue());
-                    safe->quickConnectWith (choice);
-                }), true);
+            content->onAccept = [safe, content] ()
+            {
+                if (safe == nullptr)
+                    return;
+                QuickConnectChoice choice;
+                choice.driver = content->getDriver();
+                choice.channel1 = content->getChannel();
+                choice.endpointIndex = content->getNlEndpointIndex();
+                choice.bidirectional = content->getBidirectional();
+                choice.useWindowsEndpoint = content->isWindowsEndpointMode();
+                choice.renderEndpoint = content->getRenderEndpoint();
+                choice.captureEndpoint = content->getCaptureEndpoint();
+                safe->quickConnectWith (choice);
+            };
+
+            juce::DialogWindow::LaunchOptions options;
+            options.content.setOwned (content);
+            options.dialogTitle = L10n::tr ("Quick Connect", "Quick Connect");
+            options.dialogBackgroundColour = Palette::background;
+            options.escapeKeyTriggersCloseButton = true;
+            options.useNativeTitleBar = true;
+            options.resizable = true;
+            options.componentToCentreAround = this;
+            options.launchAsync();
         }
 
         void applyProfile()
@@ -10778,6 +11577,11 @@ namespace
                 add (b.id, b.name, "bus", true);
             for (const auto& d : destinations)
                 add (d.id, d.name, d.type, true);
+            // Keep a copy for the detached window (opened later) and feed both
+            // surfaces with the same rows.
+            lastMeterRows = rows;
+            if (detachedMetersWindow != nullptr)
+                detachedMetersWindow->setRows (lastMeterRows);
             metersPanel.setRows (std::move (rows));
 
             std::map<juce::String, bool> online;
@@ -10834,7 +11638,10 @@ namespace
         juce::TextButton addRouteButton, updateRouteButton, removeRouteButton;
         juce::Label routeSourceLabel, routeDestLabel, routeGainLabel;
 
-        juce::StringArray wasapiEndpoints;
+        // Render names first, then capture names (unchanged shape used by the
+        // source/destination endpoint combos).  The two separate lists below are
+        // the same scan split by direction, for Quick Connect's endpoint mode.
+        juce::StringArray wasapiEndpoints, wasapiRenderEndpoints, wasapiCaptureEndpoints;
 
         std::vector<Source> sources;
         std::vector<Destination> destinations;
@@ -10846,7 +11653,22 @@ namespace
         // Modular surface: patchbay central, on-demand sections and a compact
         // engine status bar (see EngineStatusBar).
         EngineStatusBar statusBar;
-        juce::TextButton sectionRouting, sectionStudio, sectionMixer, sectionDevices, sectionDiagnostics, sectionQuickConnect;
+        juce::TextButton sectionRouting, sectionStudio, sectionMixer, sectionDevices, sectionDiagnostics;
+        // Quick Connect is a toolbar action that opens its own dialog; it is no
+        // longer a permanent slot in the section strip.
+        juce::TextButton quickConnectButton;
+        // Draggable dividers between the left lists, the patchbay and the right
+        // column.  Width overrides are 0 until the operator drags one.
+        PaneResizer leftPaneResizer { true }, rightPaneResizer { true };
+        int leftPanelWidthPref = 0;
+        int rightPanelWidthPref = 0;
+        int lastLeftPanelWidth = 0;
+        int lastRightPanelWidth = 0;
+        // Detached metres window: the main window hides its own meters while it
+        // is open and reclaims the space when it closes.
+        DetachedMetersWindow* detachedMetersWindow = nullptr;
+        std::vector<MeterRow> lastMeterRows;
+        juce::TextButton metersDetachButton;
         // Studio surface window (returns / buses / monitoring / mix-minus).
         StudioWindow* studioWindow = nullptr;
         StudioComponent* studioContent = nullptr;
@@ -11612,6 +12434,12 @@ namespace
                     choice.endpointIndex = juce::jlimit (0, 3, argValue ("--qc-endpoint").getIntValue());
                     choice.bidirectional = args.contains ("--qc-bidirectional");
                     choice.testTone = args.contains ("--qc-test-tone");
+                    // User-mode path: --qc-windows-endpoint sends the signal to
+                    // an already-signed Windows render endpoint instead of an
+                    // NL Mic published by the kernel driver.
+                    choice.useWindowsEndpoint = args.contains ("--qc-windows-endpoint");
+                    choice.renderEndpoint = argValue ("--qc-render-endpoint");
+                    choice.captureEndpoint = argValue ("--qc-capture-endpoint");
                     const int holdSeconds = juce::jmax (2, argValue ("--qc-hold").getIntValue());
                     const auto logPath = argValue ("--qc-log");
                     const auto studioPath = argValue ("--qc-studio-profile");
